@@ -21,10 +21,11 @@ constexpr char kTag[] = "moto_audio";
 constexpr std::uint32_t kSampleRate = 22050;
 constexpr std::uint8_t kBitsPerSample = 16;
 constexpr std::uint8_t kChannelCount = 1;
-// The NS4150B amplifier is loud and the speaker is tiny: keep the digital
-// level well clear of full scale so nothing clips, and set the codec volume
-// once.  Both are worth revisiting on a real bike at speed.
-constexpr int kVolumePercent = 70;
+// The codec output is at full scale: a bike at speed with a helmet is a much
+// noisier place than a desk, and the panel has to be audible over wind. The
+// digital samples stay well clear of clipping (kAmplitude), so this only lifts
+// the analogue gain rather than making the waveform harsher.
+constexpr int kVolumePercent = 100;
 constexpr int kAmplitude = 8192;
 constexpr int kSamplesPerChunk = 256;
 // Attack and release in milliseconds: a tone that starts or stops mid-slope

@@ -7,8 +7,8 @@
 #define MOTO_UI_ROAD_POLYLINE_CAPACITY 24
 #define MOTO_UI_BUILDING_POINT_CAPACITY 128
 #define MOTO_UI_BUILDING_FOOTPRINT_CAPACITY 16
-#define MOTO_UI_CANVAS_WIDTH 466
-#define MOTO_UI_CANVAS_HEIGHT 466
+#define MOTO_UI_CANVAS_WIDTH 480
+#define MOTO_UI_CANVAS_HEIGHT 480
 
 #ifdef __cplusplus
 extern "C" {
@@ -56,10 +56,43 @@ typedef enum {
 typedef enum {
     MOTO_UI_PAGE_NAVIGATION = 0,
     MOTO_UI_PAGE_SPEED,
+    MOTO_UI_PAGE_TRIP,
     MOTO_UI_PAGE_COMPASS,
+    MOTO_UI_PAGE_CLOCK,
     MOTO_UI_PAGE_MUSIC,
     MOTO_UI_PAGE_COUNT,
 } moto_ui_page_t;
+
+/* Minutes-since-midnight sentinel used when the phone has no trustworthy
+   local wall-clock yet (for example while disconnected). */
+#define MOTO_UI_CLOCK_UNKNOWN 0xFFFFU
+
+typedef struct {
+    /* Minutes since local midnight, 0..1439, or MOTO_UI_CLOCK_UNKNOWN. */
+    uint16_t minutes;
+    /* ISO-8601 weekday: 1 Monday .. 7 Sunday; 0 unknown. */
+    uint8_t weekday;
+    /* Local calendar month/day; 0 when unknown. */
+    uint8_t month;
+    uint8_t day;
+} moto_ui_clock_t;
+
+/**
+ * Ride totals accumulated by the phone.  The board only renders them: the
+ * moving-time and elevation rules live in the phone's trip computer, so a
+ * firmware update cannot change what a past ride would have counted.
+ */
+typedef struct {
+    uint32_t distance_m;
+    uint32_t moving_time_s;
+    uint32_t elevation_gain_m;
+    /* Peak speed in tenths of km/h; 0 when nothing was recorded. */
+    uint16_t max_speed_deci_kph;
+    /* Nonzero while the phone is accumulating the current ride. */
+    uint8_t recording;
+    /* Nonzero when elevation_gain_m is trustworthy. */
+    uint8_t elevation_known;
+} moto_ui_trip_t;
 
 typedef enum {
     MOTO_MUSIC_PREVIOUS = 0,
@@ -69,7 +102,7 @@ typedef enum {
 } moto_music_command_t;
 
 typedef struct {
-    /* Native pixel coordinates in the single 466 x 466 shared canvas. */
+    /* Native pixel coordinates in the single 480 x 480 shared canvas. */
     int16_t x;
     int16_t y;
 } moto_ui_point_t;
@@ -106,6 +139,22 @@ typedef void (*moto_page_change_callback_t)(moto_ui_page_t page,
                                              void *context);
 typedef void (*moto_demo_change_callback_t)(uint8_t enabled,
                                              void *context);
+/* Both fire on a tap or long press that the rider made on the panel itself. */
+typedef void (*moto_trip_reset_callback_t)(void *context);
+typedef void (*moto_interaction_callback_t)(void *context);
+
+/**
+ * One phone notification, already decoded from ANCS.  Strings are UTF-8 and
+ * point at the caller's storage: the UI copies what it needs before returning.
+ */
+typedef struct {
+    const char *category;
+    const char *app;
+    const char *title;
+    const char *message;
+    /* How long the card stays up before it disappears on its own. */
+    uint32_t hold_ms;
+} moto_ui_notification_t;
 
 typedef struct {
     moto_ui_page_t page;
@@ -161,6 +210,26 @@ moto_ui_page_t moto_nav_ui_get_page(void);
 void moto_nav_ui_set_page_change_callback(
     moto_page_change_callback_t callback,
     void *context);
+/** Update only the Clock page; other pages keep their current content. */
+void moto_nav_ui_set_clock(const moto_ui_clock_t *clock);
+/** Update only the Trip page. */
+void moto_nav_ui_set_trip(const moto_ui_trip_t *trip);
+/** Long-pressing the Trip page asks the phone to start a new ride. */
+void moto_nav_ui_set_trip_reset_callback(
+    moto_trip_reset_callback_t callback,
+    void *context);
+/** Any touch, page change or key press, for the parked-screen policy. */
+void moto_nav_ui_set_interaction_callback(
+    moto_interaction_callback_t callback,
+    void *context);
+/**
+ * Show a phone notification over the current page.  Repeating the call while
+ * one is visible replaces the content and restarts the hold, and the overlay
+ * disappears on its own after hold_ms or as soon as it is touched.
+ */
+void moto_nav_ui_show_notification(const moto_ui_notification_t *notification);
+/** Hide the notification overlay early, if one is visible. */
+void moto_nav_ui_dismiss_notification(void);
 void moto_nav_ui_set_music_state(const moto_music_state_t *state);
 void moto_nav_ui_set_music_page_enabled(uint8_t enabled);
 void moto_nav_ui_set_music_command_callback(
