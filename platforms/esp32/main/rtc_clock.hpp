@@ -281,6 +281,22 @@ inline bool needs_writeback(const Time& stored, const Time& phone,
 // The clock page's sentinel for "no time known".
 constexpr std::uint16_t kUnknownMinutes = 0xFFFFU;
 
+// Year used when neither the RTC nor the phone can supply one: the year this
+// firmware was built in. __DATE__ is "Mmm dd yyyy", so the last four bytes are
+// the year.
+constexpr std::uint16_t parse_build_year() noexcept {
+  const char* date = __DATE__;
+  std::uint16_t year = 0;
+  for (int i = 7; i < 11; ++i) {
+    if (date[i] < '0' || date[i] > '9') {
+      return 2000U;
+    }
+    year = static_cast<std::uint16_t>(year * 10U + (date[i] - '0'));
+  }
+  return year >= 2000U && year <= 2099U ? year : 2000U;
+}
+constexpr std::uint16_t kFallbackYear = parse_build_year();
+
 /// Holds the time the clock page should show and keeps it ticking when the
 /// phone is away. The phone's push is authoritative while the link is up; the
 /// board's RTC carries on afterwards, and a push that disagrees by more than
@@ -297,10 +313,23 @@ class LocalClock {
     if (!enabled_) {
       return;
     }
-    // The first push has nothing to build on: the phone always sends a full
-    // month/day, so that alone is enough to start the calendar.
-    const Time seed = base_.is_valid() ? base_ : Time{2000U, 1U, 1U, 0U, 0U, 0U, 6U};
-    base_ = from_phone(minutes, weekday, month, day, seed);
+    // The phone never sends the year. Prefer the year the board already holds
+    // (the RTC); when the RTC has never been set, fall back to the year this
+    // firmware was compiled in, which is the only calendar it can sensibly be
+    // in and is what a factory-fresh chip will be seeded with.
+    if (!valid_date(base_.year, month, day)) {
+      base_.year = kFallbackYear;
+    }
+    if (minutes >= 24U * 60U || !valid_date(base_.year, month, day)) {
+      return;
+    }
+    base_.month = month;
+    base_.day = day;
+    base_.hour = static_cast<std::uint8_t>(minutes / 60U);
+    base_.minute = static_cast<std::uint8_t>(minutes % 60U);
+    base_.weekday = (weekday >= 1U && weekday <= 7U)
+                        ? weekday
+                        : iso_weekday(base_.year, month, day);
     if (base_.is_valid()) {
       anchored_ms_ = elapsed_ms;
     }

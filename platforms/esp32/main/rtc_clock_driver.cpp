@@ -16,23 +16,11 @@ constexpr const char* kTag = "moto_rtc";
 // the audio codec; 100 kHz is what the BSP publishes for all of them.
 constexpr std::uint32_t kI2cTimeoutMs = 100;
 
-// The year this firmware was compiled in: __DATE__ is "Mmm dd yyyy", so the
-// last four characters are the year. A two-digit RTC year is ambiguous on its
-// own; this is the only century a board running this image can be in.
-constexpr int parse_build_year() noexcept {
-  const char* date = __DATE__;
-  int year = 0;
-  for (int i = 7; i < 11; ++i) {
-    if (date[i] < '0' || date[i] > '9') {
-      return 2000;
-    }
-    year = year * 10 + (date[i] - '0');
-  }
-  return year;
-}
-constexpr int kBuildYear = parse_build_year();
-static_assert(kBuildYear >= 2000 && kBuildYear <= 2099,
-              "the RTC calendar supports 2000..2099 only");
+// The RTC calendar covers 2000..2099; the build year must be usable as the
+// century hint for a chip that has never been written.
+static_assert(moto::rtc_clock::kFallbackYear >= 2000 &&
+                  moto::rtc_clock::kFallbackYear <= 2099,
+              "build year must fall inside the RTC calendar");
 
 }  // namespace
 
@@ -96,8 +84,7 @@ bool RtcClock::read(moto::rtc_clock::Time& out) const {
   // Before any phone has written a time, the only century this firmware can
   // possibly be running in is the one it was built in. The chip's two-digit
   // year then lands in that century instead of a guessed 2000.
-  const std::uint16_t hint =
-      year_hint_ != 0 ? year_hint_ : static_cast<std::uint16_t>(kBuildYear);
+  const std::uint16_t hint = year_hint_ != 0 ? year_hint_ : moto::rtc_clock::kFallbackYear;
   if (!moto::rtc_clock::decode_registers(regs, sizeof(regs), hint, out)) {
     return false;
   }
