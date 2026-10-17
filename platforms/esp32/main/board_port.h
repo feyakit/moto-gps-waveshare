@@ -5,6 +5,7 @@
 
 #include "esp_err.h"
 #include "lvgl.h"
+#include "moto_audio_tones.h"
 #include "moto_nav_ui.h"
 
 #ifdef __cplusplus
@@ -52,8 +53,40 @@ bool board_port_lock(uint32_t timeout_ms);
 /** Release a lock previously acquired with board_port_lock. */
 void board_port_unlock(void);
 
-/** GPIO3/SYS_OUT is high while the case PWR key is physically held. */
+/** GPIO18 is low while the board's active-low user key is physically held. */
+/**
+ * Set the AMOLED brightness, 0..100 percent. Zero is used by the parked/idle
+ * screen policy: the panel stops emitting light while LVGL, BLE and the IMU
+ * keep running, so the first touch or bump can light it again instantly.
+ */
+esp_err_t board_port_set_brightness(uint8_t percent);
+
+/**
+ * Queue one of the short cues defined in moto_audio_tones.h for the onboard
+ * codec and speaker.
+ *
+ * Never blocks: the board's audio task plays queued tones in order, so this is
+ * safe to call from the BLE receive callback or the LVGL task.  An id with no
+ * waveform, or a board whose codec fails to start, stays silent.
+ */
+esp_err_t board_port_play_tone(moto_tone_t tone);
+
+/// Queues a flash-resident spoken phrase. Same contract as
+/// board_port_play_tone: never blocks, and a cue that cannot be queued is
+/// dropped rather than played late.
+esp_err_t board_port_play_voice(moto_voice_phrase_t phrase);
+
 bool board_port_power_button_pressed(void);
+
+/// Reads the board RTC. False when the part is absent or the time was never
+/// set, in which case the clock page must fall back to the phone.
+bool board_port_rtc_read(int* year, int* month, int* day, int* hour,
+                         int* minute, int* second, int* weekday);
+
+/// Corrects the board RTC from a phone timestamp. The platform decides whether
+/// the difference is large enough to be worth writing.
+void board_port_rtc_sync(int year, int month, int day, int hour, int minute,
+                         int second, int weekday);
 
 /**
  * Request AXP2101 software power-off. Keep a deep-sleep fallback in the caller

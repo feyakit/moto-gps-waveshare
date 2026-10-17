@@ -317,6 +317,20 @@ void PhoneNavBridge::play_tone(moto_tone_t tone) {
   tone_callback_(tone, tone_context_);
 }
 
+void PhoneNavBridge::play_voice(moto_voice_phrase_t phrase) {
+  if (phrase == MOTO_VOICE_NONE || voice_callback_ == nullptr) {
+    return;
+  }
+  voice_callback_(phrase, voice_context_);
+}
+
+void PhoneNavBridge::set_voice_callback(VoiceCallback callback,
+                                        void* context) noexcept {
+  const std::lock_guard<std::mutex> lock(state_mutex_);
+  voice_callback_ = callback;
+  voice_context_ = context;
+}
+
 void PhoneNavBridge::publish_chimes() {
   moto::audio::ChimeEvent event;
   {
@@ -338,7 +352,13 @@ void PhoneNavBridge::publish_chimes() {
     event = chime_policy_.update(inputs);
   }
   for (std::uint8_t index = 0; index < event.count; ++index) {
-    play_tone(event.tones[index]);
+    // A slot carries a spoken phrase or a tone, never both. Speech wins when
+    // present: for a turn the words say more than the beep did.
+    if (event.voices[index] != MOTO_VOICE_NONE) {
+      play_voice(event.voices[index]);
+    } else {
+      play_tone(event.tones[index]);
+    }
   }
 }
 

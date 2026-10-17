@@ -16,6 +16,9 @@
 namespace {
 constexpr char kTag[] = "moto_gps";
 constexpr std::uint64_t kPowerHoldMs = 3'000;
+// Panel brightness while the rider is looking at the screen. Zero is reserved
+// for the parked/idle policy in PhoneNavBridge.
+constexpr std::uint8_t kScreenOnBrightness = 100;
 
 moto::ble::AckStatus receive_phone_message(
     const moto::ble::ReassembledMessage& message, void* context) {
@@ -26,10 +29,85 @@ void update_phone_link(bool active, void* context) {
   static_cast<PhoneNavBridge*>(context)->on_link_state(active);
 }
 
-void update_motion_heading(float heading_rate_dps, std::uint64_t sample_ms,
-                           void* context) {
-  static_cast<PhoneNavBridge*>(context)->on_imu_sample(heading_rate_dps,
-                                                       sample_ms);
+void update_motion_heading(float heading_rate_dps, float accel_mps2,
+                           std::uint64_t sample_ms, void* context) {
+  auto* bridge = static_cast<PhoneNavBridge*>(context);
+  bridge->on_imu_sample(heading_rate_dps, sample_ms);
+  bridge->on_motion_sample(accel_mps2, sample_ms);
+}
+
+// Called on the NimBLE host task for every notification the phone publishes to
+// the ANCS session.
+void update_notification(const moto::ancs::NotificationSource& source,
+                         const moto::ancs::NotificationAttributes& attributes,
+                         void* context) {
+  static_cast<PhoneNavBridge*>(context)->on_notification(source, attributes);
+}
+
+// Driven by PhoneNavBridge when the parked/idle policy blanks or lights the
+// panel. Called from the IMU, BLE or LVGL thread, so it must not take the LVGL
+// lock: esp_lcd queues the brightness command on its own bus lock.
+void screen_power_changed(bool on, void*) {
+  const esp_err_t result =
+      board_port_set_brightness(on ? kScreenOnBrightness : 0);
+  if (result != ESP_OK) {
+    ESP_LOGW(kTag, "AMOLED brightness change failed: %s",
+             esp_err_to_name(result));
+  }
+}
+
+/// The bridge decides which cue a situation deserves; the board owns the
+/// waveform.  Called from the BLE task inside present_navigation(), so it must
+/// only queue the tone.
+void play_tone(moto_tone_t tone, void*) {
+  const esp_err_t result = board_port_play_tone(tone);
+  if (result != ESP_OK && result != ESP_ERR_TIMEOUT) {
+    ESP_LOGW(kTag, "cue %d could not be queued: %s", static_cast<int>(tone),
+             esp_err_to_name(result));
+  }
+}
+
+/// The phone pushed a time that the RTC disagrees with; correct the chip.
+/// Called on the BLE task, so it must stay short: one I2C transaction.
+void rtc_write_back(const moto::rtc_clock::Time& time, void*) {
+  board_port_rtc_sync(time.year, time.month, time.day, time.hour, time.minute,
+                      time.second, time.weekday);
+}
+
+/// Seed the clock page from the board RTC so it shows the right time before
+/// any phone connects.
+void seed_clock(PhoneNavBridge& bridge) {
+  int year = 0;
+  int month = 0;
+  int day = 0;
+  int hour = 0;
+  int minute = 0;
+  int second = 0;
+  int weekday = 0;
+  if (!board_port_rtc_read(&year, &month, &day, &hour, &minute, &second,
+                           &weekday)) {
+    ESP_LOGI(kTag, "RTC has no usable time yet; clock follows the phone");
+    return;
+  }
+  moto::rtc_clock::Time time{};
+  time.year = static_cast<std::uint16_t>(year);
+  time.month = static_cast<std::uint8_t>(month);
+  time.day = static_cast<std::uint8_t>(day);
+  time.hour = static_cast<std::uint8_t>(hour);
+  time.minute = static_cast<std::uint8_t>(minute);
+  time.second = static_cast<std::uint8_t>(second);
+  time.weekday = static_cast<std::uint8_t>(weekday);
+  bridge.seed_clock_from_rtc(time);
+  ESP_LOGI(kTag, "clock seeded from RTC: %02d:%02d", hour, minute);
+}
+
+/// Spoken navigation phrases come from flash, so this only queues one.
+void play_voice(moto_voice_phrase_t phrase, void*) {
+  const esp_err_t result = board_port_play_voice(phrase);
+  if (result != ESP_OK && result != ESP_ERR_TIMEOUT) {
+    ESP_LOGW(kTag, "phrase %d could not be queued: %s", static_cast<int>(phrase),
+             esp_err_to_name(result));
+  }
 }
 
 void demo_tick_task(void* context) {
@@ -38,39 +116,33 @@ void demo_tick_task(void* context) {
     const auto now_ms = static_cast<std::uint64_t>(esp_timer_get_time()) /
                         1'000U;
     bridge->update_demo(now_ms);
+    bridge->tick_clock();
     // Match the display and route interpolation at 40 Hz. Keeping all three
     // clocks phase-compatible avoids periodic long frame gaps.
     vTaskDelay(pdMS_TO_TICKS(25));
   }
 }
 
-void power_button_task(void*) {
+void power_button_task(void* context) {
+  auto* bridge = static_cast<PhoneNavBridge*>(context);
   std::uint64_t pressed_since_ms = 0;
-  // The AXP2101 needs roughly a one-second press to power the board on, so
-  // the task usually starts while the user is still holding PWR. Arm the
-  // hold-to-shutdown detector only after the line has been seen low once;
-  // otherwise the tail of the power-on press is counted as a new 3-second
-  // hold and the freshly booted unit switches itself off.
-  bool released_once = false;
+  // GPIO18 is a separate active-low user key, not the AXP2101 power-on input.
+  ESP_LOGI(kTag, "GPIO18 user-key hold detector ready");
   while (true) {
     const std::uint64_t now_ms =
         static_cast<std::uint64_t>(esp_timer_get_time()) / 1'000U;
     if (!board_port_power_button_pressed()) {
-      if (!released_once) {
-        released_once = true;
-        ESP_LOGI(kTag, "PWR ready: button released, hold detection armed");
-      }
       pressed_since_ms = 0;
-      vTaskDelay(pdMS_TO_TICKS(20));
-      continue;
-    }
-    if (!released_once) {
-      // Startup press still in progress; do not start the hold timer.
       vTaskDelay(pdMS_TO_TICKS(20));
       continue;
     }
     if (pressed_since_ms == 0) {
       pressed_since_ms = now_ms;
+      // The key is also the wake gesture: a short press on a blanked panel
+      // lights it again, and a held press shuts down over a visible screen.
+      if (bridge != nullptr) {
+        bridge->note_user_activity();
+      }
       ESP_LOGI(kTag, "PWR press started");
     } else if (now_ms - pressed_since_ms >= kPowerHoldMs) {
       ESP_LOGI(kTag, "PWR held for 3 seconds; requesting shutdown");
@@ -85,15 +157,14 @@ void power_button_task(void*) {
                  esp_err_to_name(result));
       }
 
-      // AXP2101 should remove the switched rails here. If this particular
-      // board remains alive while USB is attached, blank the panel and enter
-      // deep sleep after key release. GPIO3 high wakes it on the next press.
+      // If USB power keeps the board alive after PMIC shutdown, sleep after
+      // releasing GPIO18 and wake when the active-low key is pressed again.
       vTaskDelay(pdMS_TO_TICKS(500));
       while (board_port_power_button_pressed()) {
         vTaskDelay(pdMS_TO_TICKS(20));
       }
       ESP_ERROR_CHECK(esp_sleep_enable_ext1_wakeup_io(
-          1ULL << 3, ESP_EXT1_WAKEUP_ANY_HIGH));
+          1ULL << 18, ESP_EXT1_WAKEUP_ANY_LOW));
       esp_deep_sleep_start();
     }
     vTaskDelay(pdMS_TO_TICKS(20));
@@ -194,6 +265,15 @@ extern "C" void app_main(void) {
              esp_err_to_name(ble_result));
   }
 
+  phone_bridge.set_screen_power_callback(screen_power_changed, nullptr);
+  phone_bridge.set_tone_callback(play_tone, nullptr);
+  phone_bridge.set_voice_callback(play_voice, nullptr);
+  phone_bridge.set_rtc_hook(rtc_write_back, nullptr);
+  // The Apple notification client rides along on the iPhone's own link, so
+  // installing its callback is all the wiring it needs.
+  transport.ancs_client().set_notification_callback(update_notification,
+                                                    &phone_bridge);
+
   static MotionHeadingSensor motion_sensor;
   const esp_err_t motion_result = motion_sensor.start(update_motion_heading,
                                                       &phone_bridge);
@@ -208,10 +288,13 @@ extern "C" void app_main(void) {
                   nullptr) != pdPASS) {
     ESP_LOGW(kTag, "navigation demo task could not start");
   }
-  if (xTaskCreate(power_button_task, "moto_power", 3'072, nullptr, 3,
+  if (xTaskCreate(power_button_task, "moto_power", 3'072, &phone_bridge, 3,
                   nullptr) != pdPASS) {
     ESP_LOGW(kTag, "PWR long-hold task could not start");
   }
+
+  // Last, so the page is painted before the first minute tick.
+  seed_clock(phone_bridge);
 
   ESP_LOGI(kTag,
            "iPhone BLE + QMI heading -> NavPresenter -> shared LVGL running");

@@ -9,7 +9,12 @@
 
 #include "lvgl.h"
 
+LV_FONT_DECLARE(moto_font_clock_96);
 LV_FONT_DECLARE(moto_font_nav_16);
+// Notification text is arbitrary user content, so these carry the GB2312
+// level-1 Hanzi set. Instrument copy stays on Montserrat.
+LV_FONT_DECLARE(moto_font_notify_16);
+LV_FONT_DECLARE(moto_font_notify_20);
 
 namespace {
 
@@ -33,6 +38,13 @@ constexpr lv_color_t kGreen = LV_COLOR_MAKE(0x69, 0xD4, 0x94);
 constexpr double kPi = 3.14159265358979323846;
 constexpr int kCompassTickCount = 24;
 constexpr int kSpeedTickCount = 18;
+constexpr int kClockTickCount = 60;
+// Trip page rows: moving time, average speed, maximum speed. The hero number
+// above them is total distance.
+constexpr int kTripRowMoving = 0;
+constexpr int kTripRowAverage = 1;
+constexpr int kTripRowMax = 2;
+constexpr int kTripRowCount = 3;
 constexpr int kDesignWidth = 360;
 constexpr std::uint32_t kPageDotsVisibleMs = 5'000;
 // Keep LVGL, the UI interpolation timer and IMU presentation on the same
@@ -139,6 +151,18 @@ struct Ui {
     lv_obj_t *nav_lifecycle_subtitle = nullptr;
     lv_obj_t *nav_lifecycle_kicker = nullptr;
     lv_timer_t *nav_lifecycle_timer = nullptr;
+
+    // Phone notifications are drawn on a full-canvas overlay so they stay
+    // readable over the map and never disturb the instrument layout.
+    lv_obj_t *notification_overlay = nullptr;
+    lv_obj_t *notification_category = nullptr;
+    lv_obj_t *notification_badge = nullptr;
+    lv_obj_t *notification_app = nullptr;
+    lv_obj_t *notification_title = nullptr;
+    lv_obj_t *notification_message = nullptr;
+    lv_obj_t *notification_hint = nullptr;
+    lv_timer_t *notification_timer = nullptr;
+    std::uint8_t notification_unread = 0;
     lv_timer_t *nav_success_timer = nullptr;
     moto_ui_phone_connection_t phone_connection = MOTO_UI_PHONE_OFFLINE;
     LifecycleVisual lifecycle_visual = LifecycleVisual::Hidden;
@@ -160,6 +184,19 @@ struct Ui {
     lv_point_precise_t compass_tick_points[kCompassTickCount][2]{};
     lv_obj_t *compass_letters[4]{};
 
+    lv_obj_t *clock_ticks[kClockTickCount]{};
+    lv_point_precise_t clock_tick_points[kClockTickCount][2]{};
+    lv_obj_t *clock_time = nullptr;
+    lv_obj_t *clock_date = nullptr;
+    moto_ui_clock_t clock{};
+
+    lv_obj_t *trip_distance = nullptr;
+    lv_obj_t *trip_unit = nullptr;
+    lv_obj_t *trip_row_labels[kTripRowCount]{};
+    lv_obj_t *trip_row_values[kTripRowCount]{};
+    lv_obj_t *trip_caption = nullptr;
+    moto_ui_trip_t trip{};
+
     lv_obj_t *music_source = nullptr;
     lv_obj_t *music_title = nullptr;
     lv_obj_t *music_artist = nullptr;
@@ -177,6 +214,10 @@ struct Ui {
     void *page_callback_context = nullptr;
     moto_demo_change_callback_t demo_callback = nullptr;
     void *demo_callback_context = nullptr;
+    moto_trip_reset_callback_t trip_reset_callback = nullptr;
+    void *trip_reset_callback_context = nullptr;
+    moto_interaction_callback_t interaction_callback = nullptr;
+    void *interaction_callback_context = nullptr;
     bool music_page_enabled = true;
     bool demo_active = false;
     bool reduce_motion = false;
@@ -198,6 +239,7 @@ void reset_ui_state() {
     ui.lifecycle_visual = LifecycleVisual::Hidden;
     ui.lifecycle_target = LifecycleVisual::Hidden;
     ui.music_page_enabled = true;
+    ui.clock.minutes = MOTO_UI_CLOCK_UNKNOWN;
     // Force the first geometry payload to bind every mutable LVGL line even
     // when its protocol revision happens to start at zero.
     ui.nav_route_generation = ~std::uint32_t{0};
@@ -274,15 +316,19 @@ void draw_vehicle_marker(lv_event_t *event) {
     lv_draw_triangle(layer, &triangle);
 }
 
+bool page_available(int index) {
+    return index != MOTO_UI_PAGE_MUSIC || ui.music_page_enabled;
+}
+
 void update_page_dots() {
+    const int base = 178 - (MOTO_UI_PAGE_COUNT - 1) * 11;
     for(int i = 0; i < MOTO_UI_PAGE_COUNT; ++i) {
         const bool active = i == static_cast<int>(ui.page);
         lv_obj_set_size(ui.page_dots[i], px(active ? 16 : 5), px(5));
         lv_obj_set_style_radius(ui.page_dots[i], px(3), 0);
         lv_obj_set_style_bg_color(ui.page_dots[i], active ? kWhite : kGraphite, 0);
-        lv_obj_set_x(ui.page_dots[i], px(145 + i * 22 - (active ? 5 : 0)));
-        const bool available = i != MOTO_UI_PAGE_MUSIC || ui.music_page_enabled;
-        if(ui.page_dots_visible && available) {
+        lv_obj_set_x(ui.page_dots[i], px(base + i * 22 - (active ? 5 : 0)));
+        if(ui.page_dots_visible && page_available(i)) {
             lv_obj_remove_flag(ui.page_dots[i], LV_OBJ_FLAG_HIDDEN);
         } else {
             lv_obj_add_flag(ui.page_dots[i], LV_OBJ_FLAG_HIDDEN);
@@ -307,8 +353,93 @@ void reveal_page_dots() {
     }
 }
 
+constexpr int kNotificationTextWidth = 300;
+constexpr int kNotificationTitleHeight = 58;
+constexpr int kNotificationMessageHeight = 66;
+constexpr std::uint32_t kNotificationHoldMs = 8'000;
+
+void hide_notification_overlay() {
+    if(ui.notification_overlay == nullptr) return;
+    lv_obj_add_flag(ui.notification_overlay, LV_OBJ_FLAG_HIDDEN);
+    if(ui.notification_timer != nullptr) lv_timer_pause(ui.notification_timer);
+}
+
+void notification_timeout(lv_timer_t *timer) {
+    // The UI tree can be rebuilt while a timer is still alive.
+    if(ui.notification_overlay == nullptr) {
+        lv_timer_pause(timer);
+        return;
+    }
+    hide_notification_overlay();
+}
+
+void notification_pressed(lv_event_t *) {
+    if(ui.notification_overlay == nullptr) return;
+    ui.notification_unread = 0;
+    hide_notification_overlay();
+}
+
+void create_notification_overlay() {
+    lv_obj_t *overlay = make_layer(ui.screen);
+    ui.notification_overlay = overlay;
+    lv_obj_set_style_bg_color(overlay, kBlack, 0);
+    lv_obj_set_style_bg_opa(overlay, LV_OPA_COVER, 0);
+    lv_obj_add_event_cb(overlay, notification_pressed, LV_EVENT_PRESSED,
+                        nullptr);
+    lv_obj_add_flag(overlay, LV_OBJ_FLAG_HIDDEN);
+
+    // Category heading, with the count of notifications that arrived in this
+    // burst on the right.
+    ui.notification_category =
+        make_label(overlay, &lv_font_montserrat_16, kIce, "NOTIFICATION");
+    lv_obj_set_style_text_letter_space(ui.notification_category, px(4), 0);
+    lv_obj_align(ui.notification_category, LV_ALIGN_TOP_MID, 0, px(74));
+    ui.notification_badge = make_label(overlay, &lv_font_montserrat_16, kQuiet,
+                                       "");
+    lv_obj_align(ui.notification_badge, LV_ALIGN_TOP_RIGHT, -px(58), px(74));
+
+    ui.notification_app = make_label(overlay, &moto_font_notify_16, kQuiet,
+                                     "");
+    // Bundle identifiers can be long; keep the line inside the round bezel.
+    lv_obj_set_width(ui.notification_app, px(280));
+    lv_obj_set_height(ui.notification_app, px(22));
+    lv_label_set_long_mode(ui.notification_app, LV_LABEL_LONG_DOT);
+    lv_obj_set_style_text_align(ui.notification_app, LV_TEXT_ALIGN_CENTER, 0);
+    lv_obj_align(ui.notification_app, LV_ALIGN_TOP_MID, 0, px(102));
+
+    ui.notification_title =
+        make_label(overlay, &moto_font_notify_20, kWhite, "");
+    lv_obj_set_width(ui.notification_title, px(kNotificationTextWidth));
+    lv_obj_set_height(ui.notification_title, px(kNotificationTitleHeight));
+    lv_label_set_long_mode(ui.notification_title, LV_LABEL_LONG_DOT);
+    lv_obj_set_style_text_align(ui.notification_title, LV_TEXT_ALIGN_CENTER,
+                                0);
+    lv_obj_align(ui.notification_title, LV_ALIGN_CENTER, 0, px(-30));
+
+    ui.notification_message =
+        make_label(overlay, &moto_font_notify_16, kSoft, "");
+    lv_obj_set_width(ui.notification_message, px(kNotificationTextWidth));
+    lv_obj_set_height(ui.notification_message, px(kNotificationMessageHeight));
+    lv_label_set_long_mode(ui.notification_message, LV_LABEL_LONG_DOT);
+    lv_obj_set_style_text_align(ui.notification_message, LV_TEXT_ALIGN_CENTER,
+                                0);
+    lv_obj_align(ui.notification_message, LV_ALIGN_CENTER, 0, px(34));
+
+    ui.notification_hint = make_label(overlay, &lv_font_montserrat_16, kQuiet,
+                                      "TAP TO CLOSE");
+    lv_obj_set_style_text_letter_space(ui.notification_hint, px(2), 0);
+    lv_obj_align(ui.notification_hint, LV_ALIGN_BOTTOM_MID, 0, -px(52));
+
+    ui.notification_timer =
+        lv_timer_create(notification_timeout, kNotificationHoldMs, nullptr);
+    lv_timer_pause(ui.notification_timer);
+}
+
 void interaction_event(lv_event_t *) {
     reveal_page_dots();
+    if(ui.interaction_callback != nullptr) {
+        ui.interaction_callback(ui.interaction_callback_context);
+    }
 }
 
 void install_interaction_wake(lv_obj_t *object) {
@@ -345,17 +476,13 @@ void gesture_event(lv_event_t *) {
     lv_indev_t *indev = lv_indev_active();
     if(indev == nullptr) return;
     const lv_dir_t direction = lv_indev_get_gesture_dir(indev);
-    int next = static_cast<int>(ui.page);
-    if(direction == LV_DIR_LEFT) {
-        next = (next + 1) % MOTO_UI_PAGE_COUNT;
-    } else if(direction == LV_DIR_RIGHT) {
-        next = (next + MOTO_UI_PAGE_COUNT - 1) % MOTO_UI_PAGE_COUNT;
-    } else {
-        return;
-    }
-    if(!ui.music_page_enabled && next == MOTO_UI_PAGE_MUSIC) {
-        next = direction == LV_DIR_LEFT ? MOTO_UI_PAGE_NAVIGATION
-                                        : MOTO_UI_PAGE_COMPASS;
+    if(direction != LV_DIR_LEFT && direction != LV_DIR_RIGHT) return;
+    const int step = direction == LV_DIR_LEFT ? 1 : MOTO_UI_PAGE_COUNT - 1;
+    int next = (static_cast<int>(ui.page) + step) % MOTO_UI_PAGE_COUNT;
+    // Step over temporary pages (for example Music without a media session)
+    // and land on the first available page in the swiped direction.
+    for(int hop = 0; hop < MOTO_UI_PAGE_COUNT && !page_available(next); ++hop) {
+        next = (next + step) % MOTO_UI_PAGE_COUNT;
     }
     const auto requested = static_cast<moto_ui_page_t>(next);
     if(ui.page_callback != nullptr) {
@@ -604,7 +731,7 @@ void route_motion_tick(lv_timer_t *) {
     // The line objects retain pointers to the mutable point arrays. Ordinary
     // animation therefore only changes those arrays and invalidates the one
     // common map layer. Rebinding every road/building used to invalidate the
-    // same 466x232 region dozens of times per frame.
+    // same 480x232 region dozens of times per frame.
     bool pixels_changed = false;
     if(buildings_moved) {
         pixels_changed = apply_building_geometry_frame(false) || pixels_changed;
@@ -1759,9 +1886,197 @@ void create_compass_page() {
     lv_obj_align(ui.compass_speed, LV_ALIGN_CENTER, 0, px(57));
 }
 
+void update_clock_view() {
+    if(ui.clock_time == nullptr) return;
+    if(ui.clock.minutes == MOTO_UI_CLOCK_UNKNOWN ||
+       ui.clock.minutes >= 24U * 60U) {
+        lv_label_set_text(ui.clock_time, "--:--");
+    } else {
+        char value[8];
+        std::snprintf(value, sizeof(value), "%02u:%02u",
+                      static_cast<unsigned>(ui.clock.minutes / 60U),
+                      static_cast<unsigned>(ui.clock.minutes % 60U));
+        lv_label_set_text(ui.clock_time, value);
+    }
+
+    static const char *weekdays[] = {
+        "", "MON", "TUE", "WED", "THU", "FRI", "SAT", "SUN"};
+    static const char *months[] = {
+        "", "JAN", "FEB", "MAR", "APR", "MAY", "JUN",
+        "JUL", "AUG", "SEP", "OCT", "NOV", "DEC"};
+    char date[24] = "";
+    const bool has_weekday = ui.clock.weekday >= 1 && ui.clock.weekday <= 7;
+    if(ui.clock.month >= 1 && ui.clock.month <= 12 &&
+       ui.clock.day >= 1 && ui.clock.day <= 31) {
+        if(has_weekday) {
+            std::snprintf(date, sizeof(date), "%s %02u %s",
+                          weekdays[ui.clock.weekday],
+                          static_cast<unsigned>(ui.clock.day),
+                          months[ui.clock.month]);
+        } else {
+            std::snprintf(date, sizeof(date), "%02u %s",
+                          static_cast<unsigned>(ui.clock.day),
+                          months[ui.clock.month]);
+        }
+    } else if(has_weekday) {
+        std::snprintf(date, sizeof(date), "%s", weekdays[ui.clock.weekday]);
+    }
+    lv_label_set_text(ui.clock_date, date);
+}
+
+void create_clock_page() {
+    lv_obj_t *page = ui.pages[MOTO_UI_PAGE_CLOCK];
+    lv_obj_t *title = make_label(page, &lv_font_montserrat_16, kQuiet, "CLOCK");
+    lv_obj_set_style_text_letter_space(title, px(4), 0);
+    lv_obj_align(title, LV_ALIGN_TOP_MID, 0, px(48));
+
+    // A 60-tick watch dial keeps this page in the same visual family as the
+    // speed arc and the compass rose. The radii match the compass ring so the
+    // two instrument pages are interchangeable. Minute ticks are short; every
+    // fifth tick is longer, brighter and slightly thicker.
+    for(int i = 0; i < kClockTickCount; ++i) {
+        const bool major = (i % 5) == 0;
+        const double angle = i * 6.0 * kPi / 180.0;
+        const double outer = px(154.0);
+        const double inner = px(major ? 138.0 : 145.0);
+        ui.clock_tick_points[i][0] = {
+            static_cast<lv_value_precise_t>(px(180.0) + std::sin(angle) * outer),
+            static_cast<lv_value_precise_t>(px(180.0) - std::cos(angle) * outer),
+        };
+        ui.clock_tick_points[i][1] = {
+            static_cast<lv_value_precise_t>(px(180.0) + std::sin(angle) * inner),
+            static_cast<lv_value_precise_t>(px(180.0) - std::cos(angle) * inner),
+        };
+        ui.clock_ticks[i] = lv_line_create(page);
+        lv_obj_set_size(ui.clock_ticks[i], MOTO_UI_CANVAS_WIDTH,
+                        MOTO_UI_CANVAS_HEIGHT);
+        lv_line_set_points_mutable(ui.clock_ticks[i],
+                                   ui.clock_tick_points[i], 2);
+        lv_obj_set_style_line_width(ui.clock_ticks[i], px(major ? 3 : 2), 0);
+        lv_obj_set_style_line_color(ui.clock_ticks[i],
+                                    major ? kSoft : kGraphite, 0);
+    }
+
+    ui.clock_time = make_label(page, &moto_font_clock_96, kWhite, "--:--");
+    lv_obj_align(ui.clock_time, LV_ALIGN_CENTER, 0, px(-12));
+    ui.clock_date = make_label(page, &lv_font_montserrat_20, kQuiet, "");
+    lv_obj_set_style_text_letter_space(ui.clock_date, px(2), 0);
+    lv_obj_align(ui.clock_date, LV_ALIGN_CENTER, 0, px(45));
+    lv_obj_t *caption = make_label(page, &lv_font_montserrat_16, kQuiet,
+                                   "LOCAL TIME");
+    lv_obj_set_style_text_letter_space(caption, px(2), 0);
+    lv_obj_align(caption, LV_ALIGN_BOTTOM_MID, 0, px(-49));
+    update_clock_view();
+}
+
+void update_trip_view() {
+    if(ui.trip_distance == nullptr) return;
+    if(ui.trip.recording == 0) {
+        lv_label_set_text(ui.trip_distance, "--");
+        for(int i = 0; i < kTripRowCount; ++i) {
+            lv_label_set_text(ui.trip_row_values[i], "--");
+        }
+        lv_label_set_text(ui.trip_caption, "NO TRIP");
+        return;
+    }
+
+    char value[20];
+    const double kilometres = static_cast<double>(ui.trip.distance_m) / 1000.0;
+    // One decimal below 100 km keeps a short ride readable; above that the
+    // tenth is noise on a glance-only instrument.
+    std::snprintf(value, sizeof(value), kilometres < 100.0 ? "%.1f" : "%.0f",
+                  kilometres);
+    lv_label_set_text(ui.trip_distance, value);
+
+    const unsigned total_seconds =
+        static_cast<unsigned>(ui.trip.moving_time_s);
+    const unsigned hours = total_seconds / 3600U;
+    const unsigned minutes = (total_seconds / 60U) % 60U;
+    const unsigned seconds = total_seconds % 60U;
+    if(hours > 0U) {
+        std::snprintf(value, sizeof(value), "%u:%02u:%02u", hours, minutes,
+                      seconds);
+    } else {
+        std::snprintf(value, sizeof(value), "%u:%02u", minutes, seconds);
+    }
+    lv_label_set_text(ui.trip_row_values[kTripRowMoving], value);
+
+    // Average speed is derived on the board so the phone only ever sends
+    // totals. Moving time already excludes stops, so the division is the
+    // rider-facing average rather than an elapsed-time average.
+    const double average_kph =
+        ui.trip.moving_time_s > 0
+            ? static_cast<double>(ui.trip.distance_m) /
+                  static_cast<double>(ui.trip.moving_time_s) * 3.6
+            : 0.0;
+    std::snprintf(value, sizeof(value), "%.1f", average_kph);
+    lv_label_set_text(ui.trip_row_values[kTripRowAverage], value);
+
+    std::snprintf(value, sizeof(value), "%.1f",
+                  static_cast<double>(ui.trip.max_speed_deci_kph) / 10.0);
+    lv_label_set_text(ui.trip_row_values[kTripRowMax], value);
+
+    if(ui.trip.elevation_known != 0) {
+        char caption[32];
+        std::snprintf(caption, sizeof(caption), "CLIMB +%u M",
+                      static_cast<unsigned>(ui.trip.elevation_gain_m));
+        lv_label_set_text(ui.trip_caption, caption);
+    } else {
+        lv_label_set_text(ui.trip_caption, "CLIMB --");
+    }
+}
+
+void trip_page_event(lv_event_t *event) {
+    if(lv_event_get_code(event) != LV_EVENT_LONG_PRESSED) return;
+    if(ui.trip_reset_callback != nullptr) {
+        ui.trip_reset_callback(ui.trip_reset_callback_context);
+    }
+}
+
+void create_trip_page() {
+    lv_obj_t *page = ui.pages[MOTO_UI_PAGE_TRIP];
+    // A trip computer is only useful if the rider can zero it without walking
+    // back to the phone, so the whole page is the reset target.
+    lv_obj_add_event_cb(page, trip_page_event, LV_EVENT_LONG_PRESSED, nullptr);
+    lv_obj_t *title = make_label(page, &lv_font_montserrat_16, kQuiet, "TRIP");
+    lv_obj_set_style_text_letter_space(title, px(4), 0);
+    lv_obj_align(title, LV_ALIGN_TOP_MID, 0, px(48));
+
+    // Total distance is the number a rider checks most often, so it is the
+    // hero; the three instrument rows below carry the derived statistics.
+    ui.trip_distance = make_label(page, &lv_font_montserrat_48, kWhite, "--");
+    lv_obj_align(ui.trip_distance, LV_ALIGN_CENTER, 0, px(-62));
+    ui.trip_unit = make_label(page, &lv_font_montserrat_16, kQuiet, "KM");
+    lv_obj_set_style_text_letter_space(ui.trip_unit, px(3), 0);
+    lv_obj_align(ui.trip_unit, LV_ALIGN_CENTER, 0, px(-20));
+
+    static const char *row_labels[kTripRowCount] = {
+        "MOVING", "AVG KM/H", "MAX KM/H"};
+    static const int row_offsets[kTripRowCount] = {18, 54, 90};
+    for(int i = 0; i < kTripRowCount; ++i) {
+        ui.trip_row_labels[i] =
+            make_label(page, &lv_font_montserrat_16, kQuiet, row_labels[i]);
+        lv_obj_set_style_text_letter_space(ui.trip_row_labels[i], px(2), 0);
+        lv_obj_align(ui.trip_row_labels[i], LV_ALIGN_LEFT_MID, px(96),
+                     px(row_offsets[i]));
+        ui.trip_row_values[i] =
+            make_label(page, &lv_font_montserrat_20, kWhite, "--");
+        lv_obj_align(ui.trip_row_values[i], LV_ALIGN_RIGHT_MID, px(-96),
+                     px(row_offsets[i]));
+    }
+    ui.trip_caption = make_label(page, &lv_font_montserrat_16, kQuiet,
+                                 "NO TRIP");
+    lv_obj_set_style_text_letter_space(ui.trip_caption, px(2), 0);
+    lv_obj_align(ui.trip_caption, LV_ALIGN_BOTTOM_MID, 0, px(-49));
+    update_trip_view();
+}
+
 void create_music_page() {
     lv_obj_t *page = ui.pages[MOTO_UI_PAGE_MUSIC];
-    ui.music_source = make_label(page, &lv_font_montserrat_16, kQuiet, "APPLE MUSIC");
+    // Song titles and artist names are arbitrary user content, so these three
+    // labels use the bundled Hanzi-capable font. Montserrat has no CJK glyphs
+    // at all: a Chinese title showed up as a row of boxes.
+    ui.music_source = make_label(page, &moto_font_notify_16, kQuiet, "APPLE MUSIC");
     lv_obj_set_style_text_letter_space(ui.music_source, px(2), 0);
     lv_obj_align(ui.music_source, LV_ALIGN_TOP_MID, 0, px(37));
 
@@ -1782,12 +2097,12 @@ void create_music_page() {
     lv_obj_set_style_bg_opa(core, LV_OPA_COVER, 0);
     lv_obj_set_style_border_width(core, 0, 0);
 
-    ui.music_title = make_label(page, &lv_font_montserrat_20, kWhite, "NIGHT RIDE");
+    ui.music_title = make_label(page, &moto_font_notify_20, kWhite, "NIGHT RIDE");
     lv_obj_set_width(ui.music_title, px(260));
     lv_obj_set_style_text_align(ui.music_title, LV_TEXT_ALIGN_CENTER, 0);
     lv_label_set_long_mode(ui.music_title, LV_LABEL_LONG_DOT);
     lv_obj_align(ui.music_title, LV_ALIGN_TOP_MID, 0, px(190));
-    ui.music_artist = make_label(page, &lv_font_montserrat_16, kQuiet, "PHONE NOW PLAYING");
+    ui.music_artist = make_label(page, &moto_font_notify_16, kQuiet, "PHONE NOW PLAYING");
     lv_obj_set_width(ui.music_artist, px(260));
     lv_obj_set_style_text_align(ui.music_artist, LV_TEXT_ALIGN_CENTER, 0);
     lv_label_set_long_mode(ui.music_artist, LV_LABEL_LONG_DOT);
@@ -1977,9 +2292,12 @@ extern "C" void moto_nav_ui_create(void) {
     }
     create_navigation_page();
     create_speed_page();
+    create_trip_page();
     create_compass_page();
+    create_clock_page();
     create_music_page();
     create_page_dots();
+    create_notification_overlay();
     // Press events are delivered to the topmost object under the finger, not
     // necessarily to its page. Register once across the finished tree so any
     // touch reliably wakes the dots, including the map and music controls.
@@ -2009,6 +2327,8 @@ extern "C" void moto_nav_ui_set_state(const moto_ui_state_t *state) {
         case MOTO_UI_PAGE_NAVIGATION: update_navigation(state); break;
         case MOTO_UI_PAGE_SPEED: update_speedometer(state); break;
         case MOTO_UI_PAGE_COMPASS: update_compass(state); break;
+        case MOTO_UI_PAGE_CLOCK:
+        case MOTO_UI_PAGE_TRIP:
         case MOTO_UI_PAGE_MUSIC:
         case MOTO_UI_PAGE_COUNT: break;
     }
@@ -2080,6 +2400,80 @@ extern "C" void moto_nav_ui_set_page_change_callback(
     moto_page_change_callback_t callback, void *context) {
     ui.page_callback = callback;
     ui.page_callback_context = context;
+}
+
+extern "C" void moto_nav_ui_set_clock(const moto_ui_clock_t *clock) {
+    if(clock == nullptr) return;
+    ui.clock = *clock;
+    if(ui.screen != nullptr) update_clock_view();
+}
+
+extern "C" void moto_nav_ui_set_trip(const moto_ui_trip_t *trip) {
+    if(trip == nullptr) return;
+    ui.trip = *trip;
+    if(ui.screen != nullptr) update_trip_view();
+}
+
+extern "C" void moto_nav_ui_set_trip_reset_callback(
+    moto_trip_reset_callback_t callback, void *context) {
+    ui.trip_reset_callback = callback;
+    ui.trip_reset_callback_context = context;
+}
+
+extern "C" void moto_nav_ui_set_interaction_callback(
+    moto_interaction_callback_t callback, void *context) {
+    ui.interaction_callback = callback;
+    ui.interaction_callback_context = context;
+}
+
+extern "C" void moto_nav_ui_show_notification(
+    const moto_ui_notification_t *notification) {
+    if(notification == nullptr || ui.notification_overlay == nullptr) return;
+
+    const char *title = notification->title != nullptr ? notification->title : "";
+    const char *message =
+        notification->message != nullptr ? notification->message : "";
+    // Some apps send only a body; showing it as the headline keeps the panel
+    // from looking broken instead of merely terse.
+    if(title[0] == '\0' && message[0] != '\0') {
+        title = message;
+        message = "";
+    }
+    lv_label_set_text(ui.notification_category,
+                      notification->category != nullptr &&
+                              notification->category[0] != '\0'
+                          ? notification->category
+                          : "NOTIFICATION");
+    lv_label_set_text(ui.notification_app,
+                      notification->app != nullptr ? notification->app : "");
+    lv_label_set_text(ui.notification_title, title);
+    lv_label_set_text(ui.notification_message, message);
+
+    if(ui.notification_unread < 99) ++ui.notification_unread;
+    if(ui.notification_unread > 1) {
+        char badge[16] = {};
+        std::snprintf(badge, sizeof(badge), "%u NEW",
+                      static_cast<unsigned>(ui.notification_unread));
+        lv_label_set_text(ui.notification_badge, badge);
+    } else {
+        lv_label_set_text(ui.notification_badge, "");
+    }
+
+    lv_obj_remove_flag(ui.notification_overlay, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_move_foreground(ui.notification_overlay);
+    if(ui.notification_timer != nullptr) {
+        lv_timer_set_period(ui.notification_timer,
+                            notification->hold_ms == 0
+                                ? kNotificationHoldMs
+                                : notification->hold_ms);
+        lv_timer_reset(ui.notification_timer);
+        lv_timer_resume(ui.notification_timer);
+    }
+}
+
+extern "C" void moto_nav_ui_dismiss_notification(void) {
+    ui.notification_unread = 0;
+    hide_notification_overlay();
 }
 
 extern "C" void moto_nav_ui_set_music_state(const moto_music_state_t *state) {
