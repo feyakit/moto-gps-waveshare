@@ -83,7 +83,11 @@ Bluetooth pairing in the iPhone.
   the phone to select a route and does not draw an empty route as `0 m`.
 - Swipe left and right to change pages; the page dots hide after five seconds. Whether the music page
   is available depends on the capabilities the phone declares.
-- Holding the active-low GPIO18 user key for about three seconds requests shutdown from the AXP2101; on USB power there is a
+- Keys: **BOOT short press turns the volume down**, **GPIO18 short press turns it up**, four steps
+  100/70/40/0 persisted in NVS; holding GPIO18 for about three seconds requests shutdown from the
+  AXP2101 (deep sleep is the fallback on USB power). PWR stays a power key and never touches the
+  volume. BOOT is GPIO0: readable at runtime, but do not hold it while powering on, because GPIO0
+  selects the serial downloader.
   deep-sleep fallback. Different power supply combinations still need to be measured.
 - The QMI8658 relative angular rate assists turning; the heading while moving is anchored by phone
   positioning, and no absolute north reference at rest is provided.

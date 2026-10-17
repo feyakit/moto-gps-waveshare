@@ -10,12 +10,20 @@
 #include "freertos/task.h"
 #include "moto_nav_presenter.hpp"
 #include "moto_nav_ui.h"
+#include "moto/audio/volume_policy.hpp"
 #include "motion_heading_sensor.h"
+#include "nvs.h"
 #include "phone_nav_bridge.h"
 
 namespace {
 constexpr char kTag[] = "moto_gps";
 constexpr std::uint64_t kPowerHoldMs = 3'000;
+// Anything shorter than this is contact bounce, not the rider asking for a
+// different speaker level.
+constexpr std::uint64_t kShortPressMinMs = 60;
+constexpr char kVolumeNvsNamespace[] = "moto";
+constexpr char kVolumeNvsKey[] = "volume";
+constexpr std::uint8_t kVolumeDefault = 100;
 // Panel brightness while the rider is looking at the screen. Zero is reserved
 // for the parked/idle policy in PhoneNavBridge.
 constexpr std::uint8_t kScreenOnBrightness = 100;
@@ -123,6 +131,102 @@ void demo_tick_task(void* context) {
   }
 }
 
+/// Speaker level the key cycles through. Loaded once at boot so a press never
+/// has to touch flash.
+std::uint8_t g_volume = kVolumeDefault;
+
+std::uint8_t load_volume() {
+  nvs_handle_t handle = 0;
+  if (nvs_open(kVolumeNvsNamespace, NVS_READONLY, &handle) != ESP_OK) {
+    return kVolumeDefault;
+  }
+  std::uint8_t value = kVolumeDefault;
+  const esp_err_t result = nvs_get_u8(handle, kVolumeNvsKey, &value);
+  nvs_close(handle);
+  return result == ESP_OK ? moto::audio::clamp_percent(value) : kVolumeDefault;
+}
+
+void save_volume(std::uint8_t value) {
+  nvs_handle_t handle = 0;
+  if (nvs_open(kVolumeNvsNamespace, NVS_READWRITE, &handle) != ESP_OK) {
+    return;
+  }
+  nvs_set_u8(handle, kVolumeNvsKey, value);
+  nvs_commit(handle);
+  nvs_close(handle);
+}
+
+/// Applies and persists one new speaker level, with a cue as feedback.
+void apply_volume(std::uint8_t level, const char* source) {
+  if (level == g_volume) {
+    // Already at the end of the range; a cue would claim something changed.
+    return;
+  }
+  g_volume = level;
+  board_port_set_volume(level);
+  save_volume(level);
+  ESP_LOGI(kTag, "volume -> %u%% (%s)", static_cast<unsigned>(level), source);
+  board_port_play_tone(MOTO_TONE_NOTIFICATION);
+}
+
+
+/// Watches the PMIC's interrupt-status registers so a PWR-key press can be
+/// told apart from a battery or charger event.
+///
+/// The PWR key is wired to the AXP2101, not to a GPIO, so the firmware cannot
+/// read it directly; these three registers are the only way the press reaches
+/// the ESP32. Reading is non-destructive and the same task clears what it
+/// reports, so each press is logged once.
+/// BOOT key: volume down. Reads GPIO0 only while the firmware is running --
+/// holding it during reset would select the serial downloader instead.
+void boot_key_task(void*) {
+  bool pressed = false;
+  std::uint64_t pressed_since_ms = 0;
+  while (true) {
+    const std::uint64_t now_ms =
+        static_cast<std::uint64_t>(esp_timer_get_time()) / 1'000U;
+    const bool down = board_port_boot_button_pressed();
+    if (down && !pressed) {
+      pressed = true;
+      pressed_since_ms = now_ms;
+      ESP_LOGI(kTag, "BOOT key pressed");
+    } else if (!down && pressed) {
+      pressed = false;
+      const std::uint64_t held_ms = now_ms - pressed_since_ms;
+      if (held_ms >= kShortPressMinMs && held_ms < kPowerHoldMs) {
+        apply_volume(moto::audio::volume_down(g_volume), "BOOT key");
+      }
+    }
+    vTaskDelay(pdMS_TO_TICKS(20));
+  }
+}
+
+void pmu_key_task(void*) {
+  std::uint64_t last_press_ms = 0;
+  while (true) {
+    std::uint8_t status[3] = {};
+    if (board_port_pmic_take_irq(status)) {
+      // 0x49 bits 0 and 3 are what a PWRON press latches on this board; other
+      // bits there belong to the charger and must not change the volume.
+      constexpr std::uint8_t kPwrKeyMask = 0x09;
+      const std::uint64_t now_ms =
+          static_cast<std::uint64_t>(esp_timer_get_time()) / 1'000U;
+      if ((status[1] & kPwrKeyMask) != 0) {
+        // The PWR key stays the power key: it is reported here only so a field
+        // problem can tell a PMU event from a real key press.
+        if (now_ms - last_press_ms >= 250) {
+          last_press_ms = now_ms;
+          ESP_LOGI(kTag, "PMU PWR key press");
+        }
+      } else {
+        ESP_LOGI(kTag, "PMU event (not the key): 48=%02x 49=%02x 4A=%02x",
+                 status[0], status[1], status[2]);
+      }
+    }
+    vTaskDelay(pdMS_TO_TICKS(50));
+  }
+}
+
 void power_button_task(void* context) {
   auto* bridge = static_cast<PhoneNavBridge*>(context);
   std::uint64_t pressed_since_ms = 0;
@@ -132,7 +236,16 @@ void power_button_task(void* context) {
     const std::uint64_t now_ms =
         static_cast<std::uint64_t>(esp_timer_get_time()) / 1'000U;
     if (!board_port_power_button_pressed()) {
-      pressed_since_ms = 0;
+      if (pressed_since_ms != 0) {
+        const std::uint64_t held_ms = now_ms - pressed_since_ms;
+        pressed_since_ms = 0;
+        // A short press is the volume key: the rider cannot look down and drag
+        // a slider, and a four-step cycle is predictable without feedback
+        // beyond one cue.
+        if (held_ms >= kShortPressMinMs && held_ms < kPowerHoldMs) {
+          apply_volume(moto::audio::volume_up(g_volume), "user key");
+        }
+      }
       vTaskDelay(pdMS_TO_TICKS(20));
       continue;
     }
@@ -288,9 +401,21 @@ extern "C" void app_main(void) {
                   nullptr) != pdPASS) {
     ESP_LOGW(kTag, "navigation demo task could not start");
   }
+  g_volume = load_volume();
+  board_port_set_volume(g_volume);
+  ESP_LOGI(kTag, "speaker volume %u%%", static_cast<unsigned>(g_volume));
+
   if (xTaskCreate(power_button_task, "moto_power", 3'072, &phone_bridge, 3,
                   nullptr) != pdPASS) {
     ESP_LOGW(kTag, "PWR long-hold task could not start");
+  }
+  if (xTaskCreate(pmu_key_task, "moto_pmu_key", 2'048, nullptr, 3,
+                  nullptr) != pdPASS) {
+    ESP_LOGW(kTag, "PMU key task could not start");
+  }
+  if (xTaskCreate(boot_key_task, "moto_boot_key", 2'048, nullptr, 3,
+                  nullptr) != pdPASS) {
+    ESP_LOGW(kTag, "BOOT key task could not start");
   }
 
   // Last, so the page is painted before the first minute tick.

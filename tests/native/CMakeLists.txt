@@ -54,6 +54,13 @@ if(NOT TARGET moto_ble_protocol)
   )
 endif()
 
+if(NOT TARGET moto_audio)
+  add_subdirectory(
+    "${CMAKE_CURRENT_LIST_DIR}/../../shared/audio"
+    "${CMAKE_CURRENT_BINARY_DIR}/audio"
+  )
+endif()
+
 add_executable(nav_core_tests nav_core_tests.cpp)
 target_link_libraries(nav_core_tests PRIVATE moto_nav_core moto_coordinates)
 target_compile_features(nav_core_tests PRIVATE cxx_std_17)
@@ -94,11 +101,39 @@ target_compile_definitions(ble_protocol_tests PRIVATE
   "MOTO_BLE_GOLDEN_FIXTURE=\"${CMAKE_CURRENT_LIST_DIR}/../../shared/protocol/fixtures/ble-navigation-v1.golden.txt\""
 )
 
+add_executable(chime_policy_tests chime_policy_tests.cpp)
+target_link_libraries(chime_policy_tests PRIVATE moto_audio)
+target_compile_features(chime_policy_tests PRIVATE cxx_std_17)
+
 add_executable(connection_epoch_gate_tests connection_epoch_gate_tests.cpp)
 target_include_directories(connection_epoch_gate_tests PRIVATE
   "${CMAKE_CURRENT_LIST_DIR}/../../platforms/esp32/main"
 )
 target_compile_features(connection_epoch_gate_tests PRIVATE cxx_std_17)
+
+add_executable(ancs_protocol_tests ancs_protocol_tests.cpp)
+target_include_directories(ancs_protocol_tests PRIVATE
+  "${CMAKE_CURRENT_LIST_DIR}/../../platforms/esp32/main"
+)
+target_compile_features(ancs_protocol_tests PRIVATE cxx_std_17)
+
+add_executable(volume_policy_tests volume_policy_tests.cpp)
+target_include_directories(volume_policy_tests PRIVATE
+  "${CMAKE_CURRENT_LIST_DIR}/../../shared/audio/include"
+)
+target_compile_features(volume_policy_tests PRIVATE cxx_std_17)
+
+add_executable(rtc_clock_tests rtc_clock_tests.cpp)
+target_include_directories(rtc_clock_tests PRIVATE
+  "${CMAKE_CURRENT_LIST_DIR}/../../platforms/esp32/main"
+)
+target_compile_features(rtc_clock_tests PRIVATE cxx_std_17)
+
+add_executable(motion_idle_detector_tests motion_idle_detector_tests.cpp)
+target_include_directories(motion_idle_detector_tests PRIVATE
+  "${CMAKE_CURRENT_LIST_DIR}/../../platforms/esp32/main"
+)
+target_compile_features(motion_idle_detector_tests PRIVATE cxx_std_17)
 
 add_executable(motion_heading_fusion_tests motion_heading_fusion_tests.cpp)
 target_include_directories(motion_heading_fusion_tests PRIVATE
@@ -121,6 +156,7 @@ target_include_directories(phone_nav_bridge_tests PRIVATE
   "${CMAKE_CURRENT_LIST_DIR}/../../shared/nav_ui/include"
 )
 target_link_libraries(phone_nav_bridge_tests PRIVATE
+  moto_audio
   moto_ble_protocol
   moto_nav_core
   Threads::Threads
@@ -135,5 +171,10 @@ add_test(NAME nav_app_tests COMMAND nav_app_tests)
 add_test(NAME nav_presenter_tests COMMAND nav_presenter_tests)
 add_test(NAME ble_protocol_tests COMMAND ble_protocol_tests)
 add_test(NAME connection_epoch_gate_tests COMMAND connection_epoch_gate_tests)
+add_test(NAME chime_policy_tests COMMAND chime_policy_tests)
+add_test(NAME ancs_protocol_tests COMMAND ancs_protocol_tests)
+add_test(NAME volume_policy_tests COMMAND volume_policy_tests)
+add_test(NAME rtc_clock_tests COMMAND rtc_clock_tests)
+add_test(NAME motion_idle_detector_tests COMMAND motion_idle_detector_tests)
 add_test(NAME motion_heading_fusion_tests COMMAND motion_heading_fusion_tests)
 add_test(NAME phone_nav_bridge_tests COMMAND phone_nav_bridge_tests)

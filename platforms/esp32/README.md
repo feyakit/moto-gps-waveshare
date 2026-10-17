@@ -66,7 +66,9 @@ idf.py -C platforms/esp32 -p PORT flash monitor
   `scripts/generate_fonts.sh` 生成；生僻字会显示为占位方块。
 - 开机黑白动画后进入连接页；连接成功后等待手机选路线，不把空路线画成 `0 m`。
 - 左右滑动换页，指示点五秒后隐藏。音乐页是否可用取决于手机声明的能力。
-- GPIO18 用户键按住约三秒请求 AXP2101 软件关机；USB 供电下有深睡兜底。不同供电组合仍需实测。
+- 按键：**BOOT 短按音量 −**、**GPIO18 短按音量 +**，四档 100/70/40/0 并存入 NVS；GPIO18 按住约三秒
+  请求 AXP2101 软件关机（USB 供电下有深睡兜底）。PWR 仍只负责电源，不参与音量。
+  BOOT 接 GPIO0，运行时可读，但**开机时请勿按住**：GPIO0 是下载模式选择脚。
 - QMI8658 相对角速度辅助转向；行驶航向由手机定位锚定，不提供静止绝对北向。
 - 使用 PSRAM 双缓冲；2.16 未把 CO5300 TE 信号引到 ESP32，因此不使用 1.75C 的 TE 同步。
 - `sdkconfig.defaults` 打开了 `CONFIG_BT_NIMBLE_ROLE_CENTRAL` 与 `CONFIG_BT_NIMBLE_GATT_CLIENT`：

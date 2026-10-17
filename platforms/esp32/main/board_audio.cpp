@@ -7,7 +7,10 @@
 #include "freertos/queue.h"
 #include "freertos/task.h"
 
+#include "moto/audio/volume_policy.hpp"
+
 #include <algorithm>
+#include <atomic>
 #include <cstddef>
 #include <cstdint>
 #include <mutex>
@@ -25,6 +28,8 @@ constexpr std::uint8_t kChannelCount = 1;
 // noisier place than a desk, and the panel has to be audible over wind. The
 // digital samples stay well clear of clipping (kAmplitude), so this only lifts
 // the analogue gain rather than making the waveform harsher.
+// Boot default; the rider changes it with the user key and it is persisted by
+// the application layer, which owns NVS.
 constexpr int kVolumePercent = 100;
 constexpr int kAmplitude = 8192;
 constexpr int kSamplesPerChunk = 256;
@@ -70,6 +75,9 @@ const Segment kCall[] = {{1400, 130}, {0, 80}, {1750, 130}, {0, 80}, {2200, 220}
 QueueHandle_t s_queue = nullptr;
 esp_codec_dev_handle_t s_speaker = nullptr;
 bool s_open = false;
+// Written by the key task, read when the codec is opened and whenever a cue is
+// played, so it has to be lock free.
+std::atomic<int> s_volume{kVolumePercent};
 std::mutex s_start_mutex;
 
 bool pattern_for(moto_tone_t tone, const Segment** segments,
@@ -136,7 +144,7 @@ bool ensure_speaker_open() {
       ESP_LOGW(kTag, "ES8311 speaker is unavailable; cues stay silent");
       return false;
     }
-    esp_codec_dev_set_out_vol(s_speaker, kVolumePercent);
+    esp_codec_dev_set_out_vol(s_speaker, s_volume.load());
   }
   if (!s_open) {
     esp_codec_dev_sample_info_t format = {};
@@ -291,6 +299,18 @@ esp_err_t board_port_play_tone(moto_tone_t tone) {
   // The board plays tones in order and a burst cannot outrun this queue.
   const moto_audio_cue_t cue = {tone, MOTO_VOICE_NONE};
   return xQueueSend(s_queue, &cue, 0) == pdTRUE ? ESP_OK : ESP_ERR_TIMEOUT;
+}
+
+esp_err_t board_port_set_volume(uint8_t percent) {
+  const int level = moto::audio::clamp_percent(percent);
+  s_volume.store(level);
+  if (s_speaker == nullptr || !s_open) {
+    // Nothing is playing yet; the level is applied when the codec opens.
+    return ESP_OK;
+  }
+  return esp_codec_dev_set_out_vol(s_speaker, level) == ESP_CODEC_DEV_OK
+             ? ESP_OK
+             : ESP_FAIL;
 }
 
 esp_err_t board_port_play_voice(moto_voice_phrase_t phrase) {

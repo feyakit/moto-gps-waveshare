@@ -71,12 +71,30 @@ esp_err_t board_port_set_brightness(uint8_t percent);
  */
 esp_err_t board_port_play_tone(moto_tone_t tone);
 
+/// Sets the speaker level, 0..100. Safe before the codec ever opens: the value
+/// is remembered and applied to the next playback. Never blocks.
+esp_err_t board_port_set_volume(uint8_t percent);
+
 /// Queues a flash-resident spoken phrase. Same contract as
 /// board_port_play_tone: never blocks, and a cue that cannot be queued is
 /// dropped rather than played late.
 esp_err_t board_port_play_voice(moto_voice_phrase_t phrase);
 
 bool board_port_power_button_pressed(void);
+
+/// BOOT key, wired to GPIO0 with a pull-up. Active low.
+///
+/// GPIO0 is also a boot strapping pin: holding this key while the chip resets
+/// selects the serial downloader instead of the application, so it may only be
+/// read once the firmware is already running.
+bool board_port_boot_button_pressed(void);
+
+/// Reads and clears the AXP2101 interrupt-status registers (0x48..0x4A).
+///
+/// The PWR key is wired to the PMIC rather than to a GPIO, so this is the only
+/// way a press reaches the firmware. Returns true when at least one bit was
+/// set; `status` receives the three raw registers.
+bool board_port_pmic_take_irq(uint8_t status[3]);
 
 /// Reads the board RTC. False when the part is absent or the time was never
 /// set, in which case the clock page must fall back to the phone.
