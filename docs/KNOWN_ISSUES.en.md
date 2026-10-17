@@ -8,7 +8,7 @@ What is published here is a development snapshot of the Waveshare production-boa
 
 | Status | Issue | Current conclusion |
 | --- | --- | --- |
-| Open | The round display stays on `WAITING FOR PHONE` after leaving home | The BLE / iOS background state recovery still needs further isolation; it is not proven that the phone has no network. The current version does not guarantee that the connection survives screen lock for a long time |
+| Partly verified | The round display stays on `WAITING FOR PHONE` after leaving home | Measured on hardware on 2026-10-17: 135 seconds of screen lock kept the link up with zero disconnects while 28 navigation scenes kept committing (the `next` distance counted down); it did not reproduce. The original scene (leaving home, moving across base stations) still has to be rechecked |
 | Open | No selectable route from Linyi to Jinan West Railway Station | Needs reproduction and a check of the position, the gateway request/response and the upstream service state; it cannot be asserted outright that AMap does not support cross-city routes |
 | Pending regression | The route on real hardware differs from the app preview, detours occur | Route-selection transfer already has logic and automated tests, but the corresponding cross-city on-bike regression has not been completed |
 | Pending regression | Page flipping / a sense of tearing during fast turns | Double buffering, interpolation and CO5300 TE synchronisation logic already exist; the actual smoothness, sustained frame rate and power draw still need to be measured |
