@@ -215,6 +215,8 @@ moto::nav::DisplayPage map_page(moto::ble::DisplayPage page) {
     case In::Speed: return Out::Speed;
     case In::Compass: return Out::Compass;
     case In::Music: return Out::Music;
+    case In::Clock: return Out::Clock;
+    case In::Trip: return Out::Trip;
   }
   return Out::Navigation;
 }
@@ -222,7 +224,9 @@ moto::nav::DisplayPage map_page(moto::ble::DisplayPage page) {
 moto::ble::DisplayPage map_page(moto_ui_page_t page) {
   switch (page) {
     case MOTO_UI_PAGE_SPEED: return moto::ble::DisplayPage::Speed;
+    case MOTO_UI_PAGE_TRIP: return moto::ble::DisplayPage::Trip;
     case MOTO_UI_PAGE_COMPASS: return moto::ble::DisplayPage::Compass;
+    case MOTO_UI_PAGE_CLOCK: return moto::ble::DisplayPage::Clock;
     case MOTO_UI_PAGE_MUSIC: return moto::ble::DisplayPage::Music;
     case MOTO_UI_PAGE_NAVIGATION:
     case MOTO_UI_PAGE_COUNT:
@@ -278,7 +282,12 @@ bool has_flag(std::uint16_t flags, moto::ble::NavigationFlag flag) {
 }  // namespace
 
 PhoneNavBridge::PhoneNavBridge(moto::nav::NavPresenter& presenter)
-    : presenter_(presenter) {}
+    : presenter_(presenter) {
+  clock_state_.minutes = MOTO_UI_CLOCK_UNKNOWN;
+  // The clock is always owned locally: the phone corrects it while connected,
+  // and the board RTC carries it afterwards.
+  local_clock_.set_enabled(true);
+}
 
 void PhoneNavBridge::set_sender(SendCallback callback,
                                 void* context) noexcept {
@@ -287,9 +296,166 @@ void PhoneNavBridge::set_sender(SendCallback callback,
   sender_context_ = context;
 }
 
+void PhoneNavBridge::set_screen_power_callback(ScreenPowerCallback callback,
+                                              void* context) noexcept {
+  const std::lock_guard<std::mutex> lock(state_mutex_);
+  screen_power_ = callback;
+  screen_power_context_ = context;
+}
+
+void PhoneNavBridge::set_tone_callback(ToneCallback callback,
+                                       void* context) noexcept {
+  const std::lock_guard<std::mutex> lock(state_mutex_);
+  tone_callback_ = callback;
+  tone_context_ = context;
+}
+
+void PhoneNavBridge::play_tone(moto_tone_t tone) {
+  if (tone == MOTO_TONE_NONE || tone_callback_ == nullptr) {
+    return;
+  }
+  tone_callback_(tone, tone_context_);
+}
+
+void PhoneNavBridge::publish_chimes() {
+  moto::audio::ChimeEvent event;
+  {
+    const std::lock_guard<std::mutex> lock(state_mutex_);
+    // snapshot_ is the snapshot the pages are drawn from, including the demo
+    // route, so the cues always match what is on the panel.
+    const moto::nav::NavSnapshot& snapshot = snapshot_;
+    moto::audio::ChimeInputs inputs;
+    inputs.navigating = link_active_ && snapshot.has_destination &&
+        snapshot.has_usable_fix && !snapshot.off_route;
+    inputs.has_maneuver = snapshot.has_next_maneuver;
+    inputs.maneuver = snapshot.next_maneuver.type;
+    inputs.maneuver_id = snapshot.next_maneuver.id;
+    inputs.distance_to_maneuver_m = snapshot.distance_to_next_maneuver_m > 0.0
+        ? static_cast<std::uint32_t>(snapshot.distance_to_next_maneuver_m)
+        : 0U;
+    inputs.speed_mps = static_cast<double>(snapshot.speed_mps);
+    inputs.speed_limit_kph = snapshot.speed_limit_kph;
+    event = chime_policy_.update(inputs);
+  }
+  for (std::uint8_t index = 0; index < event.count; ++index) {
+    play_tone(event.tones[index]);
+  }
+}
+
+bool PhoneNavBridge::screen_off() const noexcept {
+  return screen_off_.load(std::memory_order_acquire);
+}
+
+void PhoneNavBridge::apply_screen_action(MotionIdleDetector::Action action) {
+  if (action == MotionIdleDetector::Action::None) {
+    return;
+  }
+  const bool blackout = action == MotionIdleDetector::Action::Sleep;
+  ScreenPowerCallback callback = nullptr;
+  void* context = nullptr;
+  {
+    const std::lock_guard<std::mutex> lock(state_mutex_);
+    if (screen_off_.load(std::memory_order_acquire) == blackout) {
+      return;
+    }
+    screen_off_.store(blackout, std::memory_order_release);
+    callback = screen_power_;
+    context = screen_power_context_;
+  }
+  if (callback != nullptr) {
+    callback(!blackout, context);
+  }
+  if (!blackout) {
+    // The panel may have missed arbitrary state while it was dark, so the
+    // wake frame repaints every page-owned widget rather than one subset.
+    request_render(static_cast<std::uint32_t>(RenderAll));
+  }
+}
+
+void PhoneNavBridge::on_motion_sample(float accel_mps2,
+                                      std::uint64_t sample_ms) {
+  MotionIdleDetector::Action action = MotionIdleDetector::Action::None;
+  {
+    const std::lock_guard<std::mutex> lock(state_mutex_);
+    // A running engine keeps the chassis buzzing; only a switched-off bike
+    // reaches the hold. The demo is treated as riding so a bench demo does not
+    // blank the panel mid-run.
+    const bool riding = demo_active_ ||
+        snapshot_.state == moto::nav::NavState::Navigating ||
+        snapshot_.state == moto::nav::NavState::Rerouting;
+    action = idle_detector_.update(accel_mps2, sample_ms, riding);
+  }
+  apply_screen_action(action);
+}
+
+void PhoneNavBridge::note_user_activity() {
+  MotionIdleDetector::Action action = MotionIdleDetector::Action::None;
+  {
+    const std::lock_guard<std::mutex> lock(state_mutex_);
+    action = idle_detector_.note_activity(monotonic_ms());
+  }
+  apply_screen_action(action);
+}
+
+void PhoneNavBridge::on_notification(
+    const moto::ancs::NotificationSource& source,
+    const moto::ancs::NotificationAttributes& attributes) {
+  if (source.is_removed()) {
+    // The rider already handled it on the phone (answered the call, read the
+    // message), so the card should not linger. Only the notification the panel
+    // is actually showing may be closed: iOS also removes older UIDs.
+    bool matches = false;
+    {
+      const std::lock_guard<std::mutex> lock(state_mutex_);
+      matches = has_notification_ && notification_uid_ == source.uid;
+      if (matches) {
+        has_notification_ = false;
+        dismiss_notification_ = true;
+      }
+    }
+    if (matches) {
+      request_render(
+          static_cast<std::uint32_t>(RenderNotificationDismiss));
+    }
+    return;
+  }
+
+  MotionIdleDetector::Action action = MotionIdleDetector::Action::None;
+  moto_tone_t tone = MOTO_TONE_NONE;
+  {
+    const std::lock_guard<std::mutex> lock(state_mutex_);
+    std::snprintf(notification_state_.category,
+                  sizeof(notification_state_.category), "%s",
+                  moto::ancs::category_label(source.category));
+    std::snprintf(notification_state_.app, sizeof(notification_state_.app),
+                  "%s", attributes.has_app ? attributes.app : "");
+    std::snprintf(notification_state_.title,
+                  sizeof(notification_state_.title), "%s",
+                  attributes.has_title ? attributes.title : "");
+    std::snprintf(notification_state_.message,
+                  sizeof(notification_state_.message), "%s",
+                  attributes.has_message ? attributes.message : "");
+    notification_state_.hold_ms = moto::ancs::banner_hold_ms(source);
+    notification_uid_ = source.uid;
+    has_notification_ = true;
+    tone = chime_policy_.on_notification(source.is_incoming_call(),
+                                         source.is_silent());
+    // A silent notification is background noise by definition; anything else
+    // is worth lighting a blanked panel for.
+    if (!source.is_silent()) {
+      action = idle_detector_.note_activity(monotonic_ms());
+    }
+  }
+  apply_screen_action(action);
+  request_render(static_cast<std::uint32_t>(RenderNotification));
+  play_tone(tone);
+}
+
 void PhoneNavBridge::install_ui_callbacks() {
+  moto_nav_ui_set_interaction_callback(interaction, this);
   moto_nav_ui_set_page_change_callback(page_changed, this);
   moto_nav_ui_set_music_command_callback(music_command, this);
+  moto_nav_ui_set_trip_reset_callback(trip_reset, this);
   moto_nav_ui_set_demo_change_callback(demo_changed, this);
 }
 
@@ -347,10 +513,25 @@ void PhoneNavBridge::on_link_state(bool active) {
       media_state_ = {};
       media_state_.source_name = "iPhone";
       media_state_.track_title = "等待连接";
+      // The clock is the one value that must survive the link: the board's own
+      // RTC kept running, so the page shows the right time instead of --:--.
+      clock_state_.minutes = local_clock_.minutes(monotonic_ms());
+      trip_state_ = {};
+      // A card left over from the lost phone would never expire on its own.
+      if (has_notification_) {
+        has_notification_ = false;
+        notification_uid_ = 0;
+        dismiss_notification_ = true;
+      }
+      chime_policy_.reset();
     }
   }
   const std::uint32_t flags = static_cast<std::uint32_t>(RenderNavigation) |
-      (active ? 0U : static_cast<std::uint32_t>(RenderMedia));
+      (active ? 0U
+              : static_cast<std::uint32_t>(RenderMedia) |
+                    static_cast<std::uint32_t>(RenderClock) |
+                    static_cast<std::uint32_t>(RenderTrip) |
+                    static_cast<std::uint32_t>(RenderNotificationDismiss));
   request_render(flags);
 }
 
@@ -492,6 +673,9 @@ void PhoneNavBridge::set_demo_active(bool active) {
       snapshot_ = snapshot_before_demo_;
       demo_started_ms_ = 0;
     }
+    // The demo replays a route from its start, so the cues it would have made
+    // on the way round are not suppressed by the state of the real ride.
+    chime_policy_.reset();
   }
   present_navigation();
 }
@@ -559,6 +743,10 @@ moto::ble::AckStatus PhoneNavBridge::on_message(
           consume_traffic(value);
         } else if constexpr (std::is_same_v<T, moto::ble::MediaState>) {
           consume_media(value);
+        } else if constexpr (std::is_same_v<T, moto::ble::ClockState>) {
+          consume_clock(value);
+        } else if constexpr (std::is_same_v<T, moto::ble::TripState>) {
+          consume_trip(value);
         } else if constexpr (std::is_same_v<T, moto::ble::MapScene>) {
           return consume_map_scene(value);
         } else if constexpr (std::is_same_v<T, moto::ble::Ack>) {
@@ -573,8 +761,20 @@ moto::ble::AckStatus PhoneNavBridge::on_message(
       decoded.value);
 }
 
+void PhoneNavBridge::note_phone_speed(float speed_mps) {
+  MotionIdleDetector::Action action = MotionIdleDetector::Action::None;
+  {
+    const std::lock_guard<std::mutex> lock(state_mutex_);
+    action = idle_detector_.note_speed(speed_mps, monotonic_ms());
+  }
+  apply_screen_action(action);
+}
+
 void PhoneNavBridge::consume_navigation(
     const moto::ble::NavigationSnapshot& input) {
+  // A phone-reported speed proves the bike is riding even on a surface too
+  // smooth for the accelerometer threshold, so the panel must not blank.
+  note_phone_speed(static_cast<float>(input.speed_deci_kph) / 36.0F);
   {
     const std::lock_guard<std::mutex> lock(state_mutex_);
     // A valid phone snapshot is always authoritative. Older firmware allowed
@@ -785,6 +985,88 @@ void PhoneNavBridge::consume_media(const moto::ble::MediaState& input) {
   request_render(RenderMedia);
 }
 
+void PhoneNavBridge::consume_clock(const moto::ble::ClockState& input) {
+  bool write_back = false;
+  moto::rtc_clock::Time phone_time{};
+  {
+    const std::lock_guard<std::mutex> lock(state_mutex_);
+    const std::uint64_t now = monotonic_ms();
+    local_clock_.apply_phone(input.local_time_minutes, input.weekday,
+                             input.month, input.day, now);
+    if (local_clock_.valid()) {
+      const moto::rtc_clock::Time shown = local_clock_.now(now);
+      clock_state_ = {moto::rtc_clock::minutes_of_day(shown), shown.weekday,
+                      shown.month, shown.day};
+      phone_time = shown;
+      write_back = rtc_hook_ != nullptr;
+    }
+  }
+  // Outside the lock: the hook talks to I2C and must not stall the BLE task's
+  // state updates. The driver itself decides whether a write is warranted.
+  if (write_back) {
+    rtc_hook_(phone_time, rtc_hook_context_);
+  }
+  request_render(RenderClock);
+}
+
+void PhoneNavBridge::set_rtc_hook(RtcWriteCallback callback,
+                                  void* context) noexcept {
+  const std::lock_guard<std::mutex> lock(state_mutex_);
+  rtc_hook_ = callback;
+  rtc_hook_context_ = context;
+}
+
+void PhoneNavBridge::seed_clock_from_rtc(
+    const moto::rtc_clock::Time& time) {
+  {
+    const std::lock_guard<std::mutex> lock(state_mutex_);
+    local_clock_.set_enabled(true);
+    local_clock_.seed(time, monotonic_ms());
+    const std::uint64_t now = monotonic_ms();
+    const moto::rtc_clock::Time shown = local_clock_.now(now);
+    clock_state_ = {moto::rtc_clock::minutes_of_day(shown), shown.weekday,
+                    shown.month, shown.day};
+  }
+  request_render(RenderClock);
+}
+
+void PhoneNavBridge::tick_clock() {
+  bool changed = false;
+  {
+    const std::lock_guard<std::mutex> lock(state_mutex_);
+    if (!local_clock_.valid()) {
+      return;
+    }
+    const std::uint64_t now = monotonic_ms();
+    const moto::rtc_clock::Time shown = local_clock_.now(now);
+    const std::uint16_t minutes = moto::rtc_clock::minutes_of_day(shown);
+    if (minutes != clock_state_.minutes ||
+        shown.weekday != clock_state_.weekday ||
+        shown.day != clock_state_.day) {
+      clock_state_ = {minutes, shown.weekday, shown.month, shown.day};
+      changed = true;
+    }
+  }
+  if (changed) {
+    request_render(RenderClock);
+  }
+}
+
+void PhoneNavBridge::consume_trip(const moto::ble::TripState& input) {
+  {
+    const std::lock_guard<std::mutex> lock(state_mutex_);
+    trip_state_.distance_m = input.distance_m;
+    trip_state_.moving_time_s = input.moving_time_s;
+    trip_state_.elevation_gain_m = input.elevation_gain_m;
+    trip_state_.max_speed_deci_kph = input.max_speed_deci_kph;
+    trip_state_.recording =
+        (input.flags & moto::ble::TripRecording) != 0U ? 1U : 0U;
+    trip_state_.elevation_known =
+        (input.flags & moto::ble::TripElevationKnown) != 0U ? 1U : 0U;
+  }
+  request_render(RenderTrip);
+}
+
 moto::ble::AckStatus PhoneNavBridge::consume_map_scene(
     const moto::ble::MapScene& input) {
   std::size_t road_point_count = 0;
@@ -865,13 +1147,21 @@ moto::ble::AckStatus PhoneNavBridge::consume_map_scene(
     target.has_building_context = next_building > 0;
     target.map_scene_revision = input.scene_revision;
   }
+  // One line per commit: the scene revision plus what the navigation page is
+  // actually being told to draw. Without the second half a scene update says
+  // nothing about whether a route is live, which is the field question this
+  // log exists to answer.
   ESP_LOGI(kTag,
-           "map scene committed: revision=%lu roads=%u/%u buildings=%u/%u",
+           "map scene committed: revision=%lu roads=%u/%u buildings=%u/%u "
+           "nav_state=%u route_view=%d geometry=%d next=%um",
            static_cast<unsigned long>(input.scene_revision),
            static_cast<unsigned>(input.roads.size()),
            static_cast<unsigned>(road_point_count),
            static_cast<unsigned>(input.buildings.size()),
-           static_cast<unsigned>(building_point_count));
+           static_cast<unsigned>(building_point_count),
+           static_cast<unsigned>(snapshot_.state),
+           snapshot_.has_route_view ? 1 : 0, geometry_.complete ? 1 : 0,
+           static_cast<unsigned>(snapshot_.distance_to_next_maneuver_m));
   present_navigation();
   return moto::ble::AckStatus::Ok;
 }
@@ -903,6 +1193,9 @@ moto::nav::NavSnapshot& PhoneNavBridge::phone_snapshot_locked() noexcept {
 
 void PhoneNavBridge::present_navigation() {
   request_render(RenderNavigation);
+  // Every navigation-rate message lands here, which is exactly the cadence the
+  // chime policy expects.
+  publish_chimes();
 }
 
 void PhoneNavBridge::present_motion() {
@@ -926,10 +1219,21 @@ void PhoneNavBridge::render_pending() {
   if (requested == 0U) {
     return;
   }
+  if (screen_off_.load(std::memory_order_acquire)) {
+    // The panel is dark and nobody can see the result, so the work stays
+    // queued instead of being projected and pushed into an invisible panel.
+    pending_render_flags_.fetch_or(requested, std::memory_order_release);
+    return;
+  }
 
   const bool navigation = (requested & RenderNavigation) != 0U;
   const bool motion = !navigation && (requested & RenderMotion) != 0U;
   const bool media = (requested & RenderMedia) != 0U;
+  const bool clock = (requested & RenderClock) != 0U;
+  const bool trip = (requested & RenderTrip) != 0U;
+  const bool notification = (requested & RenderNotification) != 0U;
+  const bool dismiss_notification =
+      (requested & RenderNotificationDismiss) != 0U;
   {
     const std::lock_guard<std::mutex> lock(state_mutex_);
     if (navigation || motion) {
@@ -942,6 +1246,23 @@ void PhoneNavBridge::render_pending() {
     }
     if (media) {
       render_media_state_ = media_state_;
+    }
+    if (clock) {
+      render_clock_state_ = clock_state_;
+    }
+    if (trip) {
+      render_trip_state_ = trip_state_;
+    }
+    if (notification && has_notification_) {
+      render_notification_ = notification_state_;
+      render_notification_valid_ = true;
+      // A card can arrive and be removed before the dark panel is repainted,
+      // in which case the removal wins and the stale card is never shown.
+      render_dismiss_notification_ = false;
+    } else if (dismiss_notification && dismiss_notification_) {
+      render_dismiss_notification_ = true;
+      dismiss_notification_ = false;
+      render_notification_valid_ = false;
     }
   }
 
@@ -988,6 +1309,24 @@ void PhoneNavBridge::render_pending() {
         (render_media_state_.flags & moto::ble::MediaLiked) != 0U;
     moto_nav_ui_set_music_state(&state);
   }
+  if (clock) {
+    moto_nav_ui_set_clock(&render_clock_state_);
+  }
+  if (trip) {
+    moto_nav_ui_set_trip(&render_trip_state_);
+  }
+  if (notification && render_notification_valid_) {
+    moto_ui_notification_t payload{};
+    payload.category = render_notification_.category;
+    payload.app = render_notification_.app;
+    payload.title = render_notification_.title;
+    payload.message = render_notification_.message;
+    payload.hold_ms = render_notification_.hold_ms;
+    moto_nav_ui_show_notification(&payload);
+  } else if (render_dismiss_notification_) {
+    render_dismiss_notification_ = false;
+    moto_nav_ui_dismiss_notification();
+  }
   board_port_unlock();
 }
 
@@ -1004,8 +1343,13 @@ void PhoneNavBridge::run_renderer() {
 }
 #endif
 
+void PhoneNavBridge::interaction(void* context) {
+  static_cast<PhoneNavBridge*>(context)->note_user_activity();
+}
+
 void PhoneNavBridge::page_changed(moto_ui_page_t page, void* context) {
   auto* self = static_cast<PhoneNavBridge*>(context);
+  self->note_user_activity();
   {
     const std::lock_guard<std::mutex> lock(self->state_mutex_);
     self->snapshot_.display_page = map_nav_page(page);
@@ -1017,6 +1361,10 @@ void PhoneNavBridge::page_changed(moto_ui_page_t page, void* context) {
 void PhoneNavBridge::music_command(moto_music_command_t command,
                                    void* context) {
   static_cast<PhoneNavBridge*>(context)->send_music_command(command);
+}
+
+void PhoneNavBridge::trip_reset(void* context) {
+  static_cast<PhoneNavBridge*>(context)->send_trip_reset_command();
 }
 
 void PhoneNavBridge::demo_changed(uint8_t enabled, void* context) {
@@ -1048,6 +1396,13 @@ void PhoneNavBridge::send_music_command(moto_music_command_t command) {
   }
   output.page = moto::ble::DisplayPage::Music;
   send_device_command(output);
+}
+
+void PhoneNavBridge::send_trip_reset_command() {
+  moto::ble::DeviceCommand command;
+  command.kind = moto::ble::DeviceCommandKind::TripReset;
+  command.page = moto::ble::DisplayPage::Trip;
+  send_device_command(command);
 }
 
 void PhoneNavBridge::send_device_command(moto::ble::DeviceCommand command) {
