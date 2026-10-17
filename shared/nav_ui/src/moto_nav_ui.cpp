@@ -133,6 +133,11 @@ struct Ui {
     lv_timer_t *nav_route_motion_timer = nullptr;
     lv_obj_t *nav_marker = nullptr;
     lv_obj_t *nav_status = nullptr;
+    lv_obj_t *status_battery = nullptr;
+    lv_obj_t *status_bars[3]{};
+    uint8_t battery_percent = MOTO_UI_BATTERY_UNKNOWN;
+    uint8_t battery_charging = 0;
+    uint8_t link_bars = 0;
     lv_obj_t *nav_distance = nullptr;
     lv_obj_t *nav_unit = nullptr;
     lv_obj_t *nav_maneuver = nullptr;
@@ -1649,6 +1654,55 @@ void create_page_dots() {
     reveal_page_dots();
 }
 
+void update_status_row() {
+    if(ui.status_battery != nullptr) {
+        const bool known = ui.battery_percent != MOTO_UI_BATTERY_UNKNOWN;
+        char text[8];
+        if(known) {
+            lv_snprintf(text, sizeof(text), "%s%u%%",
+                        ui.battery_charging != 0 ? "+" : "",
+                        static_cast<unsigned>(ui.battery_percent));
+        } else {
+            lv_snprintf(text, sizeof(text), "--");
+        }
+        lv_label_set_text(ui.status_battery, text);
+        // A dying pack matters more than any other colour on this page.
+        lv_obj_set_style_text_color(
+            ui.status_battery,
+            known && ui.battery_percent <= 20 ? kAmber : kQuiet, 0);
+    }
+    for(int i = 0; i < 3; ++i) {
+        if(ui.status_bars[i] == nullptr) continue;
+        lv_obj_set_style_bg_color(ui.status_bars[i],
+                                  i < ui.link_bars ? kIce : kGraphite, 0);
+    }
+}
+
+void create_status_row() {
+    lv_obj_t *page = ui.pages[MOTO_UI_PAGE_NAVIGATION];
+    // Inside the circular safe area: at y=40 the visible chord is only about
+    // 264 px wide, so the row stays close to the centre line.
+    ui.status_battery = make_label(page, &lv_font_montserrat_16, kQuiet, "--");
+    lv_obj_set_width(ui.status_battery, px(56));
+    lv_obj_set_style_text_align(ui.status_battery, LV_TEXT_ALIGN_CENTER, 0);
+    lv_obj_align(ui.status_battery, LV_ALIGN_TOP_MID, px(-30), px(40));
+
+    static const int heights[3] = {6, 10, 14};
+    for(int i = 0; i < 3; ++i) {
+        lv_obj_t *bar = lv_obj_create(page);
+        lv_obj_remove_style_all(bar);
+        lv_obj_clear_flag(bar, LV_OBJ_FLAG_CLICKABLE);
+        lv_obj_set_size(bar, px(5), px(heights[i]));
+        lv_obj_set_style_radius(bar, px(2), 0);
+        lv_obj_set_style_bg_opa(bar, LV_OPA_COVER, 0);
+        lv_obj_set_style_bg_color(bar, kGraphite, 0);
+        // Bottom-aligned so the three bars read as a signal meter.
+        lv_obj_align(bar, LV_ALIGN_TOP_MID, px(8 + i * 8),
+                     px(58 - heights[i]));
+        ui.status_bars[i] = bar;
+    }
+}
+
 void create_navigation_page() {
     lv_obj_t *page = ui.pages[MOTO_UI_PAGE_NAVIGATION];
     ui.nav_map = make_layer(page);
@@ -1806,6 +1860,7 @@ void create_navigation_page() {
     lv_timer_pause(ui.nav_success_timer);
     apply_lifecycle_content(LifecycleVisual::PhoneOffline);
     ui.lifecycle_target = LifecycleVisual::PhoneOffline;
+    create_status_row();
 }
 
 void create_speed_page() {
@@ -2474,6 +2529,17 @@ extern "C" void moto_nav_ui_show_notification(
 extern "C" void moto_nav_ui_dismiss_notification(void) {
     ui.notification_unread = 0;
     hide_notification_overlay();
+}
+
+extern "C" void moto_nav_ui_set_battery(uint8_t percent, uint8_t charging) {
+    ui.battery_percent = percent > 100 ? MOTO_UI_BATTERY_UNKNOWN : percent;
+    ui.battery_charging = charging != 0 ? 1 : 0;
+    if(ui.screen != nullptr) update_status_row();
+}
+
+extern "C" void moto_nav_ui_set_link_quality(uint8_t bars) {
+    ui.link_bars = bars > 3 ? 3 : bars;
+    if(ui.screen != nullptr) update_status_row();
 }
 
 extern "C" void moto_nav_ui_set_music_state(const moto_music_state_t *state) {

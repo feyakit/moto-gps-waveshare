@@ -82,6 +82,22 @@ esp_err_t board_port_play_voice(moto_voice_phrase_t phrase);
 
 bool board_port_power_button_pressed(void);
 
+/// One reading of the AXP2101's battery telemetry.
+typedef struct {
+  /// 0..100, or 0 when no battery is connected (USB-only bench supply).
+  uint8_t percent;
+  /// Pack voltage in millivolts; 0 when the conversion failed.
+  uint16_t millivolts;
+  /// Nonzero while VBUS is present and the charger is attached.
+  uint8_t charging;
+  /// Nonzero when a battery is actually connected.
+  uint8_t present;
+} moto_battery_t;
+
+/// Reads the PMIC once. Never blocks on the radio; a failed I2C read returns
+/// false and leaves the caller's previous value alone.
+bool board_port_battery(moto_battery_t* out);
+
 /// BOOT key, wired to GPIO0 with a pull-up. Active low.
 ///
 /// GPIO0 is also a boot strapping pin: holding this key while the chip resets

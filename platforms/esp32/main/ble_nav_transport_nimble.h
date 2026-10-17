@@ -3,6 +3,7 @@
 #include <atomic>
 #include <cstdint>
 
+#include "ancs_client.h"
 #include "esp_err.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/queue.h"
@@ -33,10 +34,19 @@ class BleNavTransport {
   bool send_message(const moto::ble::Message& message,
                     std::uint8_t frame_flags = 0);
 
+  /// Last measured signal strength in dBm, or 0 when there is no link.
+  [[nodiscard]] int rssi() const;
+
   // Signature-compatible adapter for PhoneNavBridge::set_sender().
   static bool send_from_bridge(const moto::ble::Message& message,
                                std::uint8_t frame_flags,
                                void* context);
+
+  // Apple Notification Center Service client sharing this NimBLE host. It is a
+  // GATT client on the phone's own connection, so the peripheral role and the
+  // navigation protocol are untouched. Install the notification callback
+  // before the phone connects.
+  moto::esp32::AncsClient& ancs_client() noexcept { return ancs_client_; }
 
  private:
   static constexpr std::uint16_t kNoConnection = 0xFFFFU;
@@ -102,6 +112,7 @@ class BleNavTransport {
   QueueHandle_t rx_queue_ = nullptr;
   SemaphoreHandle_t tx_mutex_ = nullptr;
   TaskHandle_t rx_task_handle_ = nullptr;
+  moto::esp32::AncsClient ancs_client_{};
   moto::ble::Reassembler reassembler_{};
   moto::ble::SequenceGenerator tx_sequence_{};
   moto::ble::LinkWatchdog watchdog_{3'500};

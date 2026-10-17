@@ -74,6 +74,11 @@ class PhoneNavBridge {
   void on_notification(const moto::ancs::NotificationSource& source,
                        const moto::ancs::NotificationAttributes& attributes);
   [[nodiscard]] bool screen_off() const noexcept;
+  /// Corner status row. `percent` 0..255; 255 means no battery is fitted.
+  void set_battery(std::uint8_t percent, bool charging);
+  void set_link_quality(std::uint8_t bars);
+  /// True between 19:00 and 07:00 once the clock knows the time.
+  [[nodiscard]] bool is_night_time() const noexcept;
   void update_demo(std::uint64_t now_ms);
   moto::ble::AckStatus on_message(
       const moto::ble::ReassembledMessage& message);
@@ -194,6 +199,12 @@ class PhoneNavBridge {
   RtcWriteCallback rtc_hook_ = nullptr;
   void* rtc_hook_context_ = nullptr;
   moto_ui_clock_t render_clock_state_{};
+  std::uint8_t status_battery_percent_ = 0xFFU;
+  std::uint8_t status_battery_charging_ = 0U;
+  std::uint8_t status_link_bars_ = 0U;
+  std::uint8_t render_battery_percent_ = 0xFFU;
+  std::uint8_t render_battery_charging_ = 0U;
+  std::uint8_t render_link_bars_ = 0U;
   moto_ui_trip_t trip_state_{};
   moto_ui_trip_t render_trip_state_{};
   bool music_page_enabled_ = false;
@@ -210,8 +221,11 @@ class PhoneNavBridge {
     RenderNotification = 1U << 5U,
     // The phone removed the notification the panel is showing.
     RenderNotificationDismiss = 1U << 6U,
+    // Battery level and link quality only; cheap enough to poll while idle.
+    RenderStatus = 1U << 7U,
     RenderAll = RenderNavigation | RenderMotion | RenderMedia | RenderClock |
-                RenderTrip | RenderNotification | RenderNotificationDismiss,
+                RenderTrip | RenderNotification | RenderNotificationDismiss |
+                RenderStatus,
   };
   std::atomic<std::uint32_t> pending_render_flags_{0};
 #ifdef ESP_PLATFORM

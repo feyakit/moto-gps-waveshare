@@ -331,6 +331,32 @@ void PhoneNavBridge::set_voice_callback(VoiceCallback callback,
   voice_context_ = context;
 }
 
+void PhoneNavBridge::set_battery(std::uint8_t percent, bool charging) {
+  {
+    const std::lock_guard<std::mutex> lock(state_mutex_);
+    status_battery_percent_ = percent;
+    status_battery_charging_ = charging ? 1U : 0U;
+  }
+  request_render(RenderStatus);
+}
+
+void PhoneNavBridge::set_link_quality(std::uint8_t bars) {
+  {
+    const std::lock_guard<std::mutex> lock(state_mutex_);
+    status_link_bars_ = bars > 3U ? 3U : bars;
+  }
+  request_render(RenderStatus);
+}
+
+bool PhoneNavBridge::is_night_time() const noexcept {
+  const std::lock_guard<std::mutex> lock(state_mutex_);
+  const moto::rtc_clock::Time now = local_clock_.now(monotonic_ms());
+  if (!now.is_valid()) {
+    return false;
+  }
+  return now.hour >= 19U || now.hour < 7U;
+}
+
 void PhoneNavBridge::publish_chimes() {
   moto::audio::ChimeEvent event;
   {
@@ -1254,6 +1280,7 @@ void PhoneNavBridge::render_pending() {
   const bool notification = (requested & RenderNotification) != 0U;
   const bool dismiss_notification =
       (requested & RenderNotificationDismiss) != 0U;
+  const bool status = (requested & RenderStatus) != 0U;
   {
     const std::lock_guard<std::mutex> lock(state_mutex_);
     if (navigation || motion) {
@@ -1272,6 +1299,11 @@ void PhoneNavBridge::render_pending() {
     }
     if (trip) {
       render_trip_state_ = trip_state_;
+    }
+    if (status) {
+      render_battery_percent_ = status_battery_percent_;
+      render_battery_charging_ = status_battery_charging_;
+      render_link_bars_ = status_link_bars_;
     }
     if (notification && has_notification_) {
       render_notification_ = notification_state_;
@@ -1304,6 +1336,10 @@ void PhoneNavBridge::render_pending() {
 #endif
     request_render(requested);
     return;
+  }
+  if (navigation || status) {
+    moto_nav_ui_set_battery(render_battery_percent_, render_battery_charging_);
+    moto_nav_ui_set_link_quality(render_link_bars_);
   }
   if (navigation) {
     moto_nav_ui_set_phone_connection(render_phone_connection_);

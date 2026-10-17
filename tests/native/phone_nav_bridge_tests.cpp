@@ -302,6 +302,32 @@ void test_music_capability_state_and_touch_commands() {
   }
 }
 
+void test_status_row_carries_battery_and_link() {
+  moto::test::reset_phone_nav_bridge_probe();
+  moto::nav::NavPresenter presenter;
+  PhoneNavBridge bridge(presenter);
+  bridge.install_ui_callbacks();
+  bridge.on_link_state(true);
+  pump(bridge);
+
+  // Nothing polled yet: the row must say "unknown", not "0 %".
+  CHECK(moto::test::phone_nav_bridge_battery_percent() ==
+        MOTO_UI_BATTERY_UNKNOWN);
+
+  bridge.set_battery(64, true);
+  bridge.set_link_quality(2);
+  pump(bridge);
+  CHECK(moto::test::phone_nav_bridge_battery_percent() == 64);
+  CHECK(moto::test::phone_nav_bridge_battery_charging() == 1);
+  CHECK(moto::test::phone_nav_bridge_link_bars() == 2);
+
+  // A lost link drops the bars to zero without touching the pack reading.
+  bridge.set_link_quality(0);
+  pump(bridge);
+  CHECK(moto::test::phone_nav_bridge_link_bars() == 0);
+  CHECK(moto::test::phone_nav_bridge_battery_percent() == 64);
+}
+
 void test_clock_state_reaches_the_ui_and_clears_on_disconnect() {
   moto::test::reset_phone_nav_bridge_probe();
   moto::nav::NavPresenter presenter;
@@ -1210,6 +1236,7 @@ int main() {
   test_ble_submission_never_waits_for_lvgl_and_retries_latest_state();
   test_phone_connection_lifecycle_reaches_the_ui();
   test_music_capability_state_and_touch_commands();
+  test_status_row_carries_battery_and_link();
   test_clock_state_reaches_the_ui_and_clears_on_disconnect();
   test_clock_survives_a_disconnect_and_keeps_ticking();
   test_rtc_seeds_the_clock_before_any_phone_connects();

@@ -16,6 +16,13 @@ moto_music_command_callback_t music_callback = nullptr;
 void* music_callback_context = nullptr;
 moto_demo_change_callback_t demo_callback = nullptr;
 void* demo_callback_context = nullptr;
+moto_trip_reset_callback_t trip_reset_callback = nullptr;
+void* trip_reset_callback_context = nullptr;
+moto_interaction_callback_t interaction_callback = nullptr;
+void* interaction_callback_context = nullptr;
+moto_ui_notification_t last_notification = {};
+int notification_count = 0;
+int notification_dismiss_count = 0;
 int apply_count = 0;
 int board_lock_count = 0;
 bool board_lock_available = true;
@@ -39,6 +46,19 @@ bool media_like_available = false;
 std::string media_source;
 std::string media_title;
 std::string media_artist;
+uint8_t battery_percent = MOTO_UI_BATTERY_UNKNOWN;
+uint8_t battery_charging = 0;
+uint8_t link_bars = 0;
+uint16_t clock_minutes = MOTO_UI_CLOCK_UNKNOWN;
+uint8_t clock_weekday = 0;
+uint8_t clock_month = 0;
+uint8_t clock_day = 0;
+uint32_t trip_distance_m = 0;
+uint32_t trip_moving_time_s = 0;
+uint32_t trip_elevation_gain_m = 0;
+uint16_t trip_max_speed_deci_kph = 0;
+uint8_t trip_recording = 0;
+uint8_t trip_elevation_known = 0;
 
 }  // namespace
 
@@ -138,6 +158,66 @@ extern "C" void moto_nav_ui_set_music_command_callback(
   music_callback_context = context;
 }
 
+extern "C" void moto_nav_ui_set_trip_reset_callback(
+    moto_trip_reset_callback_t callback,
+    void* context) {
+  const std::lock_guard<std::mutex> lock(probe_mutex);
+  trip_reset_callback = callback;
+  trip_reset_callback_context = context;
+}
+
+extern "C" void moto_nav_ui_show_notification(
+    const moto_ui_notification_t* notification) {
+  if (notification == nullptr) return;
+  const std::lock_guard<std::mutex> lock(probe_mutex);
+  last_notification = *notification;
+  ++notification_count;
+}
+
+extern "C" void moto_nav_ui_dismiss_notification(void) {
+  const std::lock_guard<std::mutex> lock(probe_mutex);
+  ++notification_dismiss_count;
+}
+
+extern "C" void moto_nav_ui_set_interaction_callback(
+    moto_interaction_callback_t callback,
+    void* context) {
+  const std::lock_guard<std::mutex> lock(probe_mutex);
+  interaction_callback = callback;
+  interaction_callback_context = context;
+}
+
+extern "C" void moto_nav_ui_set_battery(uint8_t percent, uint8_t charging) {
+  const std::lock_guard<std::mutex> lock(probe_mutex);
+  battery_percent = percent;
+  battery_charging = charging;
+}
+
+extern "C" void moto_nav_ui_set_link_quality(uint8_t bars) {
+  const std::lock_guard<std::mutex> lock(probe_mutex);
+  link_bars = bars;
+}
+
+extern "C" void moto_nav_ui_set_clock(const moto_ui_clock_t* clock) {
+  if (clock == nullptr) return;
+  const std::lock_guard<std::mutex> lock(probe_mutex);
+  clock_minutes = clock->minutes;
+  clock_weekday = clock->weekday;
+  clock_month = clock->month;
+  clock_day = clock->day;
+}
+
+extern "C" void moto_nav_ui_set_trip(const moto_ui_trip_t* trip) {
+  if (trip == nullptr) return;
+  const std::lock_guard<std::mutex> lock(probe_mutex);
+  trip_distance_m = trip->distance_m;
+  trip_moving_time_s = trip->moving_time_s;
+  trip_elevation_gain_m = trip->elevation_gain_m;
+  trip_max_speed_deci_kph = trip->max_speed_deci_kph;
+  trip_recording = trip->recording;
+  trip_elevation_known = trip->elevation_known;
+}
+
 extern "C" void moto_nav_ui_set_demo_active(uint8_t enabled) {
   const std::lock_guard<std::mutex> lock(probe_mutex);
   last_demo_active = enabled;
@@ -156,6 +236,9 @@ namespace moto::test {
 void reset_phone_nav_bridge_probe() {
   const std::lock_guard<std::mutex> lock(probe_mutex);
   apply_count = 0;
+  battery_percent = MOTO_UI_BATTERY_UNKNOWN;
+  battery_charging = 0;
+  link_bars = 0;
   board_lock_count = 0;
   board_lock_available = true;
   last_road_name.clear();
@@ -178,6 +261,19 @@ void reset_phone_nav_bridge_probe() {
   media_source.clear();
   media_title.clear();
   media_artist.clear();
+  clock_minutes = MOTO_UI_CLOCK_UNKNOWN;
+  clock_weekday = 0;
+  clock_month = 0;
+  clock_day = 0;
+  trip_distance_m = 0;
+  trip_moving_time_s = 0;
+  trip_elevation_gain_m = 0;
+  trip_max_speed_deci_kph = 0;
+  trip_recording = 0;
+  trip_elevation_known = 0;
+  last_notification = {};
+  notification_count = 0;
+  notification_dismiss_count = 0;
 }
 
 void emit_page_change(moto_ui_page_t page) {
@@ -208,6 +304,32 @@ void emit_music_command(moto_music_command_t command) {
   if (callback == nullptr) return;
   const std::lock_guard<std::recursive_mutex> lock(board_mutex);
   callback(command, context);
+}
+
+void emit_trip_reset() {
+  moto_trip_reset_callback_t callback = nullptr;
+  void* context = nullptr;
+  {
+    const std::lock_guard<std::mutex> lock(probe_mutex);
+    callback = trip_reset_callback;
+    context = trip_reset_callback_context;
+  }
+  if (callback == nullptr) return;
+  const std::lock_guard<std::recursive_mutex> lock(board_mutex);
+  callback(context);
+}
+
+void emit_interaction() {
+  moto_interaction_callback_t callback = nullptr;
+  void* context = nullptr;
+  {
+    const std::lock_guard<std::mutex> lock(probe_mutex);
+    callback = interaction_callback;
+    context = interaction_callback_context;
+  }
+  if (callback == nullptr) return;
+  const std::lock_guard<std::recursive_mutex> lock(board_mutex);
+  callback(context);
 }
 
 void emit_demo_change(bool enabled) {
@@ -323,6 +445,43 @@ std::string phone_nav_bridge_media_artist() {
   return media_artist;
 }
 
+moto_ui_clock_t phone_nav_bridge_clock() {
+  const std::lock_guard<std::mutex> lock(probe_mutex);
+  moto_ui_clock_t value{};
+  value.minutes = clock_minutes;
+  value.weekday = clock_weekday;
+  value.month = clock_month;
+  value.day = clock_day;
+  return value;
+}
+
+uint8_t phone_nav_bridge_battery_percent() {
+  const std::lock_guard<std::mutex> lock(probe_mutex);
+  return battery_percent;
+}
+
+uint8_t phone_nav_bridge_battery_charging() {
+  const std::lock_guard<std::mutex> lock(probe_mutex);
+  return battery_charging;
+}
+
+uint8_t phone_nav_bridge_link_bars() {
+  const std::lock_guard<std::mutex> lock(probe_mutex);
+  return link_bars;
+}
+
+moto_ui_trip_t phone_nav_bridge_trip() {
+  const std::lock_guard<std::mutex> lock(probe_mutex);
+  moto_ui_trip_t value{};
+  value.distance_m = trip_distance_m;
+  value.moving_time_s = trip_moving_time_s;
+  value.elevation_gain_m = trip_elevation_gain_m;
+  value.max_speed_deci_kph = trip_max_speed_deci_kph;
+  value.recording = trip_recording;
+  value.elevation_known = trip_elevation_known;
+  return value;
+}
+
 bool phone_nav_bridge_last_demo_active() {
   const std::lock_guard<std::mutex> lock(probe_mutex);
   return last_demo_active != 0;
@@ -336,6 +495,21 @@ moto_maneuver_t phone_nav_bridge_last_maneuver() {
 uint32_t phone_nav_bridge_last_distance_to_maneuver_m() {
   const std::lock_guard<std::mutex> lock(probe_mutex);
   return last_distance_to_maneuver_m;
+}
+
+moto_ui_notification_t phone_nav_bridge_last_notification() {
+  const std::lock_guard<std::mutex> lock(probe_mutex);
+  return last_notification;
+}
+
+int phone_nav_bridge_notification_count() {
+  const std::lock_guard<std::mutex> lock(probe_mutex);
+  return notification_count;
+}
+
+int phone_nav_bridge_notification_dismiss_count() {
+  const std::lock_guard<std::mutex> lock(probe_mutex);
+  return notification_dismiss_count;
 }
 
 }  // namespace moto::test

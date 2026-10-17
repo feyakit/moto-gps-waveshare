@@ -226,6 +226,7 @@ int BleNavTransport::gap_event(ble_gap_event* event, void* argument) {
                  event->connect.conn_handle,
                  self->encrypted_.load() ? 1U : 0U,
                  self->subscribed_.load() ? 1U : 0U);
+        self->ancs_client_.on_connect(event->connect.conn_handle);
       } else {
         ESP_LOGW(kTag, "connection failed: status=%d",
                  event->connect.status);
@@ -236,6 +237,7 @@ int BleNavTransport::gap_event(ble_gap_event* event, void* argument) {
     case BLE_GAP_EVENT_DISCONNECT:
       ESP_LOGI(kTag, "phone disconnected: reason=%d",
                event->disconnect.reason);
+      self->ancs_client_.on_disconnect(event->disconnect.conn.conn_handle);
       self->connected_.store(false);
       self->encrypted_.store(false);
       self->subscribed_.store(false);
@@ -264,9 +266,20 @@ int BleNavTransport::gap_event(ble_gap_event* event, void* argument) {
                 value - 3U, kMaximumFrameSize))
           : 20U;
       self->max_frame_size_.store(frame_size);
+      self->ancs_client_.on_mtu_changed(event->mtu.conn_handle, value);
       ESP_LOGI(kTag, "ATT MTU=%u, protocol frame=%u", value, frame_size);
       return 0;
     }
+
+    case BLE_GAP_EVENT_NOTIFY_RX:
+      // The only peer notifications on this link belong to the ANCS session.
+      // Navigation frames travel the other way, through our TX characteristic.
+      if (event->notify_rx.om != nullptr) {
+        self->ancs_client_.on_notification(
+            event->notify_rx.conn_handle, event->notify_rx.attr_handle,
+            event->notify_rx.om->om_data, event->notify_rx.om->om_len);
+      }
+      return 0;
 
     case BLE_GAP_EVENT_ADV_COMPLETE:
       self->advertise();
@@ -290,6 +303,10 @@ int BleNavTransport::gap_event(ble_gap_event* event, void* argument) {
       self->encrypted_.store(encrypted);
       ESP_LOGI(kTag, "link encryption %s: status=%d",
                encrypted ? "ready" : "not ready", event->enc_change.status);
+      // Apple only releases notification data to an authorized link, so the
+      // ANCS probe is retried once the bond is in place.
+      self->ancs_client_.on_encryption_changed(event->enc_change.conn_handle,
+                                               encrypted);
       return 0;
     }
 
@@ -709,6 +726,19 @@ std::size_t BleNavTransport::negotiated_frame_size() const noexcept {
   return std::clamp<std::size_t>(std::min(local, peer),
                                  moto::ble::kFrameOverhead + 1U,
                                  kMaximumFrameSize);
+}
+
+int BleNavTransport::rssi() const {
+  const std::uint16_t handle =
+      connection_handle_.load(std::memory_order_acquire);
+  if (handle == kNoConnection) {
+    return 0;
+  }
+  std::int8_t measured = 0;
+  if (ble_gap_conn_rssi(handle, &measured) != 0) {
+    return 0;
+  }
+  return static_cast<int>(measured);
 }
 
 bool BleNavTransport::send_message(const moto::ble::Message& message,

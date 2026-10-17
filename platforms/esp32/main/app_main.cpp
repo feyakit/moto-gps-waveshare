@@ -27,6 +27,13 @@ constexpr std::uint8_t kVolumeDefault = 100;
 // Panel brightness while the rider is looking at the screen. Zero is reserved
 // for the parked/idle policy in PhoneNavBridge.
 constexpr std::uint8_t kScreenOnBrightness = 100;
+// Night is a glare problem, not a power problem: the panel has to stay
+// readable without destroying the rider's dark adaptation.
+constexpr std::uint8_t kNightBrightness = 35;
+constexpr std::uint32_t kStatusPollMs = 5'000;
+
+PhoneNavBridge* g_bridge = nullptr;
+std::uint8_t g_brightness = kScreenOnBrightness;
 
 moto::ble::AckStatus receive_phone_message(
     const moto::ble::ReassembledMessage& message, void* context) {
@@ -56,8 +63,12 @@ void update_notification(const moto::ancs::NotificationSource& source,
 // panel. Called from the IMU, BLE or LVGL thread, so it must not take the LVGL
 // lock: esp_lcd queues the brightness command on its own bus lock.
 void screen_power_changed(bool on, void*) {
-  const esp_err_t result =
-      board_port_set_brightness(on ? kScreenOnBrightness : 0);
+  const std::uint8_t target =
+      on ? (g_bridge != nullptr && g_bridge->is_night_time() ? kNightBrightness
+                                                             : kScreenOnBrightness)
+         : 0;
+  g_brightness = target;
+  const esp_err_t result = board_port_set_brightness(target);
   if (result != ESP_OK) {
     ESP_LOGW(kTag, "AMOLED brightness change failed: %s",
              esp_err_to_name(result));
@@ -224,6 +235,74 @@ void pmu_key_task(void*) {
       }
     }
     vTaskDelay(pdMS_TO_TICKS(50));
+  }
+}
+
+/// Battery, link quality and day/night dimming, all on one slow timer.
+///
+/// They share a task because none of them is urgent and each costs one I2C or
+/// HCI round trip; keeping them together also means the panel is never asked
+/// to repaint for two of them in the same frame.
+struct StatusContext {
+  PhoneNavBridge* bridge;
+  BleNavTransport* transport;
+};
+
+void status_task(void* context) {
+  auto* ctx = static_cast<StatusContext*>(context);
+  bool low_warned = false;
+  bool battery_logged = false;
+  std::uint8_t last_bars = 0xFFU;
+  while (true) {
+    moto_battery_t battery{};
+    if (board_port_battery(&battery)) {
+      // 0xFF tells the UI "no pack fitted", which is a different statement
+      // from "0% left" on a bench supply.
+      ctx->bridge->set_battery(battery.present != 0U ? battery.percent : 0xFFU,
+                               battery.charging != 0U);
+      if (!battery_logged) {
+        battery_logged = true;
+        ESP_LOGI(kTag, "battery: %u%% %umV charging=%u present=%u",
+                 static_cast<unsigned>(battery.percent),
+                 static_cast<unsigned>(battery.millivolts),
+                 static_cast<unsigned>(battery.charging),
+                 static_cast<unsigned>(battery.present));
+      }
+      const bool low = battery.present != 0U && battery.charging == 0U &&
+                       battery.percent <= 15U;
+      if (low && !low_warned) {
+        low_warned = true;
+        ESP_LOGW(kTag, "battery low: %u%%", battery.percent);
+        board_port_play_tone(MOTO_TONE_SPEED_LIMIT);
+      } else if (!low) {
+        low_warned = false;
+      }
+    }
+
+    // 0 dBm means no link; bars are coarse on purpose so they do not flicker
+    // while the phone moves around inside the jacket.
+    const int rssi = ctx->transport->rssi();
+    const std::uint8_t bars =
+        rssi == 0 ? 0U
+                  : rssi >= -60 ? 3U : rssi >= -75 ? 2U : 1U;
+    if (bars != last_bars) {
+      last_bars = bars;
+      ESP_LOGI(kTag, "link bars -> %u (rssi %d dBm)",
+               static_cast<unsigned>(bars), rssi);
+    }
+    ctx->bridge->set_link_quality(bars);
+
+    if (!ctx->bridge->screen_off()) {
+      const std::uint8_t target = ctx->bridge->is_night_time()
+                                      ? kNightBrightness
+                                      : kScreenOnBrightness;
+      if (target != g_brightness) {
+        g_brightness = target;
+        board_port_set_brightness(target);
+        ESP_LOGI(kTag, "brightness -> %u%%", static_cast<unsigned>(target));
+      }
+    }
+    vTaskDelay(pdMS_TO_TICKS(kStatusPollMs));
   }
 }
 
@@ -416,6 +495,13 @@ extern "C" void app_main(void) {
   if (xTaskCreate(boot_key_task, "moto_boot_key", 2'048, nullptr, 3,
                   nullptr) != pdPASS) {
     ESP_LOGW(kTag, "BOOT key task could not start");
+  }
+
+  g_bridge = &phone_bridge;
+  static StatusContext status_context{&phone_bridge, &transport};
+  if (xTaskCreate(status_task, "moto_status", 3'072, &status_context, 2,
+                  nullptr) != pdPASS) {
+    ESP_LOGW(kTag, "status task could not start");
   }
 
   // Last, so the page is painted before the first minute tick.

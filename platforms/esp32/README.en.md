@@ -68,6 +68,12 @@ Bluetooth pairing in the iPhone.
   back to correct the chip. The PCF85063 stores a two-digit year and the protocol carries no year, so
   while the chip runs alone the century comes from the firmware's build year; the first phone push
   restores the real year.
+- A status row sits at the top of the navigation page: pack level on the left (a `+` while charging,
+  amber below 20 %, one buzz at 15 % when not charging) and a three-bar BLE meter on the right that
+  falls to zero when the link drops. Level and voltage come from the AXP2101; with no battery fitted
+  it shows `--`.
+- Between 19:00 and 07:00 the panel dims to 35 % and returns to 100 % by day; the idle-blanking
+  policy is unchanged. The time comes from the RTC, so it stays right without the phone.
 - After the engine stops and the chassis is quiet for 45 seconds (180 seconds while navigating) the
   panel blanks and rendering pauses; chassis vibration, phone speed, touch or the PWR key wake it.
 - Phone notifications (ANCS) show calls, SMS and app alerts full screen. The board stays a BLE

@@ -67,6 +67,10 @@ typedef enum {
    local wall-clock yet (for example while disconnected). */
 #define MOTO_UI_CLOCK_UNKNOWN 0xFFFFU
 
+/* Battery percentage sentinel: no battery fitted (bench USB supply) or the
+   PMIC has not answered yet. */
+#define MOTO_UI_BATTERY_UNKNOWN 0xFFU
+
 typedef struct {
     /* Minutes since local midnight, 0..1439, or MOTO_UI_CLOCK_UNKNOWN. */
     uint16_t minutes;
@@ -230,6 +234,13 @@ void moto_nav_ui_set_interaction_callback(
 void moto_nav_ui_show_notification(const moto_ui_notification_t *notification);
 /** Hide the notification overlay early, if one is visible. */
 void moto_nav_ui_dismiss_notification(void);
+/**
+ * Corner status row: pack level and link quality, both at a glance while
+ * riding. `percent` is 0..100 or MOTO_UI_BATTERY_UNKNOWN; `charging` only
+ * decorates the level, it never hides it. `bars` is 0..3, 0 meaning no link.
+ */
+void moto_nav_ui_set_battery(uint8_t percent, uint8_t charging);
+void moto_nav_ui_set_link_quality(uint8_t bars);
 void moto_nav_ui_set_music_state(const moto_music_state_t *state);
 void moto_nav_ui_set_music_page_enabled(uint8_t enabled);
 void moto_nav_ui_set_music_command_callback(

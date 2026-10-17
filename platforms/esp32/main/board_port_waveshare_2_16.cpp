@@ -1007,6 +1007,34 @@ extern "C" esp_err_t board_port_set_brightness(uint8_t percent) {
   return esp_lcd_panel_co5300_set_brightness(panel, level);
 }
 
+extern "C" bool board_port_battery(moto_battery_t* out) {
+  if (pmic == nullptr || out == nullptr) {
+    return false;
+  }
+  // AXP2101: 0x00 status 1, 0x34/0x35 battery voltage (14-bit, 1 mV/LSB),
+  // 0xA4 fuel-gauge percentage. The percentages the gauge reports with no
+  // battery fitted are meaningless, so presence is decided by voltage.
+  std::uint8_t status = 0;
+  std::uint8_t voltage[2] = {};
+  std::uint8_t gauge = 0;
+  if (read_pmic_register(0x00, &status) != ESP_OK ||
+      read_pmic_register(0x34, &voltage[0]) != ESP_OK ||
+      read_pmic_register(0x35, &voltage[1]) != ESP_OK ||
+      read_pmic_register(0xA4, &gauge) != ESP_OK) {
+    return false;
+  }
+  const std::uint16_t millivolts = static_cast<std::uint16_t>(
+      ((voltage[0] & 0x3FU) << 8U) | voltage[1]);
+  out->millivolts = millivolts;
+  // Bit 3 of status 1 is the PMIC's VBUS-good flag.
+  out->charging = (status & 0x08U) != 0U ? 1U : 0U;
+  out->present = millivolts >= 3000U ? 1U : 0U;
+  out->percent = out->present != 0U
+                     ? static_cast<std::uint8_t>(gauge > 100U ? 100U : gauge)
+                     : 0U;
+  return true;
+}
+
 extern "C" bool board_port_pmic_take_irq(uint8_t status[3]) {
   if (pmic == nullptr || status == nullptr) {
     return false;
