@@ -544,6 +544,7 @@ void PhoneNavBridge::on_link_state(bool active) {
       phone_snapshot.network = moto::nav::NetworkState::Connecting;
     } else {
       phone_session_id_ = 0;
+      status_link_bars_ = 0;
       phone_snapshot.network = moto::nav::NetworkState::Offline;
       phone_snapshot.gnss_stale = true;
       phone_snapshot.has_usable_fix = false;
@@ -577,7 +578,8 @@ void PhoneNavBridge::on_link_state(bool active) {
               : static_cast<std::uint32_t>(RenderMedia) |
                     static_cast<std::uint32_t>(RenderClock) |
                     static_cast<std::uint32_t>(RenderTrip) |
-                    static_cast<std::uint32_t>(RenderNotificationDismiss));
+                    static_cast<std::uint32_t>(RenderNotificationDismiss) |
+                    static_cast<std::uint32_t>(RenderStatus));
   request_render(flags);
 }
 

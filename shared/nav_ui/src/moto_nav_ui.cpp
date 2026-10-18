@@ -133,8 +133,11 @@ struct Ui {
     lv_timer_t *nav_route_motion_timer = nullptr;
     lv_obj_t *nav_marker = nullptr;
     lv_obj_t *nav_status = nullptr;
-    lv_obj_t *status_battery = nullptr;
-    lv_obj_t *status_bars[3]{};
+    lv_obj_t *status_battery_body = nullptr;
+    lv_obj_t *status_battery_fill = nullptr;
+    lv_obj_t *status_battery_cap = nullptr;
+    lv_obj_t *status_battery_text = nullptr;
+    lv_obj_t *status_bars[4]{};
     uint8_t battery_percent = MOTO_UI_BATTERY_UNKNOWN;
     uint8_t battery_charging = 0;
     uint8_t link_bars = 0;
@@ -1655,52 +1658,117 @@ void create_page_dots() {
 }
 
 void update_status_row() {
-    if(ui.status_battery != nullptr) {
-        const bool known = ui.battery_percent != MOTO_UI_BATTERY_UNKNOWN;
+    const bool known = ui.battery_percent != MOTO_UI_BATTERY_UNKNOWN;
+    if(ui.status_battery_text != nullptr) {
         char text[8];
         if(known) {
-            lv_snprintf(text, sizeof(text), "%s%u%%",
-                        ui.battery_charging != 0 ? "+" : "",
+            lv_snprintf(text, sizeof(text), "%u",
                         static_cast<unsigned>(ui.battery_percent));
         } else {
             lv_snprintf(text, sizeof(text), "--");
         }
-        lv_label_set_text(ui.status_battery, text);
-        // A dying pack matters more than any other colour on this page.
-        lv_obj_set_style_text_color(
-            ui.status_battery,
-            known && ui.battery_percent <= 20 ? kAmber : kQuiet, 0);
+        lv_label_set_text(ui.status_battery_text, text);
+        // The number lives inside the icon, so its colour has to follow what is
+        // behind it: black once the white fill reaches the middle, white while
+        // the pack is still mostly empty.
+        const bool over_fill = known && ui.battery_percent >= 55;
+        lv_obj_set_style_text_color(ui.status_battery_text,
+                                    over_fill ? kBlack : kWhite, 0);
+        lv_obj_center(ui.status_battery_text);
     }
-    for(int i = 0; i < 3; ++i) {
+    if(ui.status_battery_body != nullptr) {
+        if(known) {
+            lv_obj_remove_flag(ui.status_battery_body, LV_OBJ_FLAG_HIDDEN);
+            lv_obj_remove_flag(ui.status_battery_cap, LV_OBJ_FLAG_HIDDEN);
+            lv_obj_remove_flag(ui.status_battery_fill, LV_OBJ_FLAG_HIDDEN);
+        } else {
+            lv_obj_add_flag(ui.status_battery_body, LV_OBJ_FLAG_HIDDEN);
+            lv_obj_add_flag(ui.status_battery_cap, LV_OBJ_FLAG_HIDDEN);
+            lv_obj_add_flag(ui.status_battery_fill, LV_OBJ_FLAG_HIDDEN);
+        }
+    }
+    if(ui.status_battery_fill != nullptr && known) {
+        const int inner = px(42);
+        int width = inner * static_cast<int>(ui.battery_percent) / 100;
+        if(ui.battery_percent > 0 && width < px(3)) width = px(3);
+        lv_obj_set_width(ui.status_battery_fill, width);
+        lv_obj_set_style_bg_color(
+            ui.status_battery_fill, ui.battery_percent <= 20 ? kAmber : kWhite,
+            0);
+    }
+    if(ui.status_battery_cap != nullptr) {
+        // A lit cap is the only charging hint that fits in this much space.
+        lv_obj_set_style_bg_color(
+            ui.status_battery_cap,
+            ui.battery_charging != 0 ? kWhite : kSoft, 0);
+    }
+    for(int i = 0; i < 4; ++i) {
         if(ui.status_bars[i] == nullptr) continue;
         lv_obj_set_style_bg_color(ui.status_bars[i],
-                                  i < ui.link_bars ? kIce : kGraphite, 0);
+                                  i < ui.link_bars ? kWhite : kGraphite, 0);
     }
 }
 
+/// Top strip of the navigation page: signal at the far left, battery at the
+/// far right, both inside the circular safe area.
+///
+/// The panel is round, so the usable width shrinks quickly towards y = 0: at
+/// the height used here the corners are already cut away, which is why the two
+/// clusters stop short of the real screen edges.
 void create_status_row() {
     lv_obj_t *page = ui.pages[MOTO_UI_PAGE_NAVIGATION];
-    // Inside the circular safe area: at y=40 the visible chord is only about
-    // 264 px wide, so the row stays close to the centre line.
-    ui.status_battery = make_label(page, &lv_font_montserrat_16, kQuiet, "--");
-    lv_obj_set_width(ui.status_battery, px(56));
-    lv_obj_set_style_text_align(ui.status_battery, LV_TEXT_ALIGN_CENTER, 0);
-    lv_obj_align(ui.status_battery, LV_ALIGN_TOP_MID, px(-30), px(40));
 
-    static const int heights[3] = {6, 10, 14};
-    for(int i = 0; i < 3; ++i) {
+    static const int bar_heights[4] = {7, 11, 15, 19};
+    for(int i = 0; i < 4; ++i) {
         lv_obj_t *bar = lv_obj_create(page);
         lv_obj_remove_style_all(bar);
         lv_obj_clear_flag(bar, LV_OBJ_FLAG_CLICKABLE);
-        lv_obj_set_size(bar, px(5), px(heights[i]));
+        lv_obj_set_size(bar, px(5), px(bar_heights[i]));
         lv_obj_set_style_radius(bar, px(2), 0);
         lv_obj_set_style_bg_opa(bar, LV_OPA_COVER, 0);
         lv_obj_set_style_bg_color(bar, kGraphite, 0);
-        // Bottom-aligned so the three bars read as a signal meter.
-        lv_obj_align(bar, LV_ALIGN_TOP_MID, px(8 + i * 8),
-                     px(58 - heights[i]));
+        // Bottom-aligned so the four bars grow upwards from one baseline.
+        lv_obj_align(bar, LV_ALIGN_TOP_LEFT, px(24 + i * 8),
+                     px(41 - bar_heights[i]));
         ui.status_bars[i] = bar;
     }
+
+    ui.status_battery_body = lv_obj_create(page);
+    lv_obj_remove_style_all(ui.status_battery_body);
+    lv_obj_clear_flag(ui.status_battery_body, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_set_size(ui.status_battery_body, px(46), px(22));
+    lv_obj_set_style_radius(ui.status_battery_body, px(5), 0);
+    lv_obj_set_style_border_width(ui.status_battery_body, px(2), 0);
+    lv_obj_set_style_border_color(ui.status_battery_body, kSoft, 0);
+    lv_obj_set_style_bg_opa(ui.status_battery_body, LV_OPA_TRANSP, 0);
+    lv_obj_set_style_pad_all(ui.status_battery_body, 0, 0);
+    lv_obj_align(ui.status_battery_body, LV_ALIGN_TOP_RIGHT, -px(24), px(19));
+
+    ui.status_battery_fill = lv_obj_create(ui.status_battery_body);
+    lv_obj_remove_style_all(ui.status_battery_fill);
+    lv_obj_clear_flag(ui.status_battery_fill, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_set_size(ui.status_battery_fill, px(42), px(18));
+    lv_obj_set_pos(ui.status_battery_fill, 0, 0);
+    lv_obj_set_style_radius(ui.status_battery_fill, px(3), 0);
+    lv_obj_set_style_bg_opa(ui.status_battery_fill, LV_OPA_COVER, 0);
+    lv_obj_set_style_bg_color(ui.status_battery_fill, kWhite, 0);
+
+    ui.status_battery_cap = lv_obj_create(page);
+    lv_obj_remove_style_all(ui.status_battery_cap);
+    lv_obj_clear_flag(ui.status_battery_cap, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_set_size(ui.status_battery_cap, px(4), px(10));
+    lv_obj_set_style_radius(ui.status_battery_cap, px(2), 0);
+    lv_obj_set_style_bg_opa(ui.status_battery_cap, LV_OPA_COVER, 0);
+    lv_obj_set_style_bg_color(ui.status_battery_cap, kSoft, 0);
+    lv_obj_align(ui.status_battery_cap, LV_ALIGN_TOP_RIGHT, -px(20), px(25));
+
+    ui.status_battery_text =
+        make_label(page, &lv_font_montserrat_14, kWhite, "--");
+    lv_obj_set_width(ui.status_battery_text, px(40));
+    lv_obj_set_style_text_align(ui.status_battery_text, LV_TEXT_ALIGN_CENTER, 0);
+    lv_obj_align(ui.status_battery_text, LV_ALIGN_TOP_RIGHT, -px(27), px(22));
+
+    update_status_row();
 }
 
 void create_navigation_page() {
@@ -1768,7 +1836,7 @@ void create_navigation_page() {
     ui.nav_status = make_label(page, &lv_font_montserrat_16, kAmber, "");
     lv_obj_set_width(ui.nav_status, px(220));
     lv_obj_set_style_text_align(ui.nav_status, LV_TEXT_ALIGN_CENTER, 0);
-    lv_obj_align(ui.nav_status, LV_ALIGN_TOP_MID, 0, px(16));
+    lv_obj_align(ui.nav_status, LV_ALIGN_TOP_MID, 0, px(48));
 
     // The next action is the navigation page's single visual hero. The short
     // road window above is deliberately quieter and contains no fake side
