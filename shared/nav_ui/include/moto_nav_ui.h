@@ -82,6 +82,9 @@ typedef struct {
     /* Local calendar month/day; 0 when unknown. */
     uint8_t month;
     uint8_t day;
+    /* Second within the minute, 0..59. Drives the sweeping second hand; the
+       text readout ignores it. */
+    uint8_t second;
 } moto_ui_clock_t;
 
 /**
@@ -161,6 +164,10 @@ typedef struct {
     const char *message;
     /* How long the card stays up before it disappears on its own. */
     uint32_t hold_ms;
+    /* Local receive time, minutes since midnight, or MOTO_UI_CLOCK_UNKNOWN.
+       The history page shows it so a rider can tell what arrived while they
+       were riding and what is stale. */
+    uint16_t local_minutes;
 } moto_ui_notification_t;
 
 typedef struct {
@@ -213,6 +220,16 @@ void moto_nav_ui_set_phone_connection(
     moto_ui_phone_connection_t connection);
 void moto_nav_ui_set_reduce_motion(uint8_t reduce_motion);
 void moto_nav_ui_set_page(moto_ui_page_t page);
+
+/**
+ * Switch to a page the rider chose by swiping, and keep it.
+ *
+ * Navigation snapshots keep arriving several times a second during a ride; if
+ * they were allowed to choose the page they would drag the rider back to
+ * Navigation on the next update. Swiping to Navigation releases the hold, so
+ * the phone drives the page again from then on.
+ */
+void moto_nav_ui_hold_selected_page(moto_ui_page_t page);
 moto_ui_page_t moto_nav_ui_get_page(void);
 void moto_nav_ui_set_page_change_callback(
     moto_page_change_callback_t callback,

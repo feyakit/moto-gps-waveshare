@@ -56,6 +56,14 @@ typedef enum {
     MOTO_VOICE_OFF_ROUTE,    /**< 已偏航，正在重新规划 */
     MOTO_VOICE_SLOW_DOWN,    /**< 请减速 */
     MOTO_VOICE_CAUTION,      /**< 注意安全 */
+    /* Distance prefixes, spoken before the action: "五百米" + "前方左转". */
+    MOTO_VOICE_DIST_50M,     /**< 五十米 */
+    MOTO_VOICE_DIST_100M,    /**< 一百米 */
+    MOTO_VOICE_DIST_200M,    /**< 两百米 */
+    MOTO_VOICE_DIST_300M,    /**< 三百米 */
+    MOTO_VOICE_DIST_500M,    /**< 五百米 */
+    MOTO_VOICE_DIST_800M,    /**< 八百米 */
+    MOTO_VOICE_DIST_1KM,     /**< 一公里 */
 } moto_voice_phrase_t;
 
 /**

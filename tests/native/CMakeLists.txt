@@ -75,6 +75,12 @@ if(TARGET lvgl)
   add_executable(nav_ui_render_tests nav_ui_render_tests.cpp)
   target_link_libraries(nav_ui_render_tests PRIVATE moto_nav_ui lvgl)
   target_compile_features(nav_ui_render_tests PRIVATE cxx_std_17)
+
+  # Screenshot helper: not a test, but it needs the same headless LVGL display
+  # as the render tests, so it is built alongside them.
+  add_executable(nav_ui_screenshots nav_ui_screenshots.cpp)
+  target_link_libraries(nav_ui_screenshots PRIVATE moto_nav_ui lvgl)
+  target_compile_features(nav_ui_screenshots PRIVATE cxx_std_17)
 endif()
 
 add_executable(nav_core_fixture_demo nav_core_fixture_demo.cpp)
@@ -116,6 +122,12 @@ target_include_directories(ancs_protocol_tests PRIVATE
   "${CMAKE_CURRENT_LIST_DIR}/../../platforms/esp32/main"
 )
 target_compile_features(ancs_protocol_tests PRIVATE cxx_std_17)
+
+add_executable(voice_distance_tests voice_distance_tests.cpp)
+target_include_directories(voice_distance_tests PRIVATE
+  "${CMAKE_CURRENT_LIST_DIR}/../../shared/audio/include"
+)
+target_compile_features(voice_distance_tests PRIVATE cxx_std_17)
 
 add_executable(volume_policy_tests volume_policy_tests.cpp)
 target_include_directories(volume_policy_tests PRIVATE
@@ -173,6 +185,7 @@ add_test(NAME ble_protocol_tests COMMAND ble_protocol_tests)
 add_test(NAME connection_epoch_gate_tests COMMAND connection_epoch_gate_tests)
 add_test(NAME chime_policy_tests COMMAND chime_policy_tests)
 add_test(NAME ancs_protocol_tests COMMAND ancs_protocol_tests)
+add_test(NAME voice_distance_tests COMMAND voice_distance_tests)
 add_test(NAME volume_policy_tests COMMAND volume_policy_tests)
 add_test(NAME rtc_clock_tests COMMAND rtc_clock_tests)
 add_test(NAME motion_idle_detector_tests COMMAND motion_idle_detector_tests)

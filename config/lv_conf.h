@@ -21,6 +21,16 @@
 #define LV_USE_STDLIB_STRING LV_STDLIB_BUILTIN
 #define LV_USE_STDLIB_SPRINTF LV_STDLIB_BUILTIN
 
+/* Page switching is driven by LV_EVENT_GESTURE on the screen. LVGL disables
+   gesture recognition by default, so without this the touch driver reports
+   only presses and drags and the handler below is never called -- the panel
+   looked unresponsive to swipes while every other interaction worked. */
+/* LVGL's own gesture recogniser stays off: it requires LV_USE_FLOAT, which
+   turns lv_value_precise_t into float and breaks the integer geometry the map
+   renderer relies on. Page swipes are detected from press/release travel in
+   moto_nav_ui instead, which needs no floating point. */
+#define LV_USE_GESTURE_RECOGNITION 0
+
 #define LV_FONT_MONTSERRAT_16 1
 #define LV_FONT_MONTSERRAT_20 1
 #define LV_FONT_MONTSERRAT_28 1

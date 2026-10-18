@@ -381,6 +381,11 @@ void PhoneNavBridge::publish_chimes() {
     // A slot carries a spoken phrase or a tone, never both. Speech wins when
     // present: for a turn the words say more than the beep did.
     if (event.voices[index] != MOTO_VOICE_NONE) {
+      // The distance prefix is a separate clip so one recording serves every
+      // maneuver: "三百米" then "前方左转" reads as one sentence.
+      if (event.prefixes[index] != MOTO_VOICE_NONE) {
+        play_voice(event.prefixes[index]);
+      }
       play_voice(event.voices[index]);
     } else {
       play_tone(event.tones[index]);
@@ -474,7 +479,9 @@ void PhoneNavBridge::on_notification(
                   sizeof(notification_state_.category), "%s",
                   moto::ancs::category_label(source.category));
     std::snprintf(notification_state_.app, sizeof(notification_state_.app),
-                  "%s", attributes.has_app ? attributes.app : "");
+                  "%s", attributes.has_app
+                            ? moto::ancs::app_display_name(attributes.app)
+                            : "");
     std::snprintf(notification_state_.title,
                   sizeof(notification_state_.title), "%s",
                   attributes.has_title ? attributes.title : "");
@@ -482,6 +489,7 @@ void PhoneNavBridge::on_notification(
                   sizeof(notification_state_.message), "%s",
                   attributes.has_message ? attributes.message : "");
     notification_state_.hold_ms = moto::ancs::banner_hold_ms(source);
+    notification_state_.local_minutes = local_clock_.minutes(monotonic_ms());
     notification_uid_ = source.uid;
     has_notification_ = true;
     tone = chime_policy_.on_notification(source.is_incoming_call(),
@@ -1044,7 +1052,7 @@ void PhoneNavBridge::consume_clock(const moto::ble::ClockState& input) {
     if (local_clock_.valid()) {
       const moto::rtc_clock::Time shown = local_clock_.now(now);
       clock_state_ = {moto::rtc_clock::minutes_of_day(shown), shown.weekday,
-                      shown.month, shown.day};
+                      shown.month, shown.day, shown.second};
       phone_time = shown;
       write_back = rtc_hook_ != nullptr;
     }
@@ -1073,13 +1081,14 @@ void PhoneNavBridge::seed_clock_from_rtc(
     const std::uint64_t now = monotonic_ms();
     const moto::rtc_clock::Time shown = local_clock_.now(now);
     clock_state_ = {moto::rtc_clock::minutes_of_day(shown), shown.weekday,
-                    shown.month, shown.day};
+                    shown.month, shown.day, shown.second};
   }
   request_render(RenderClock);
 }
 
 void PhoneNavBridge::tick_clock() {
   bool changed = false;
+  bool animating = false;
   {
     const std::lock_guard<std::mutex> lock(state_mutex_);
     if (!local_clock_.valid()) {
@@ -1088,14 +1097,23 @@ void PhoneNavBridge::tick_clock() {
     const std::uint64_t now = monotonic_ms();
     const moto::rtc_clock::Time shown = local_clock_.now(now);
     const std::uint16_t minutes = moto::rtc_clock::minutes_of_day(shown);
+    // The second is part of the comparison now: the dial's second hand has to
+    // step once a second, while the text above it only changes once a minute.
     if (minutes != clock_state_.minutes ||
         shown.weekday != clock_state_.weekday ||
-        shown.day != clock_state_.day) {
-      clock_state_ = {minutes, shown.weekday, shown.month, shown.day};
+        shown.day != clock_state_.day ||
+        shown.second != clock_state_.second) {
+      clock_state_ = {minutes, shown.weekday, shown.month, shown.day,
+                      shown.second};
       changed = true;
+      // The hands ease towards the new angle, which takes several frames. Hold
+      // the render window open briefly so the sweep is visible; without this
+      // the single render per second would leave them permanently behind.
+      clock_animation_until_ms_ = now + 900;
     }
+    animating = now < clock_animation_until_ms_;
   }
-  if (changed) {
+  if (changed || animating) {
     request_render(RenderClock);
   }
 }
@@ -1380,6 +1398,7 @@ void PhoneNavBridge::render_pending() {
     payload.title = render_notification_.title;
     payload.message = render_notification_.message;
     payload.hold_ms = render_notification_.hold_ms;
+    payload.local_minutes = render_notification_.local_minutes;
     moto_nav_ui_show_notification(&payload);
   } else if (render_dismiss_notification_) {
     render_dismiss_notification_ = false;
@@ -1408,6 +1427,22 @@ void PhoneNavBridge::interaction(void* context) {
 void PhoneNavBridge::page_changed(moto_ui_page_t page, void* context) {
   auto* self = static_cast<PhoneNavBridge*>(context);
   self->note_user_activity();
+
+  // This callback runs on the LVGL worker, from the touch gesture handler, so
+  // the display lock is already held. Taking it again would deadlock: it is a
+  // plain mutex, not a recursive one, and that is exactly what froze the panel
+  // on the Messages page.
+  //
+  // The Messages page is local to the panel: it shows notifications this board
+  // received and has no counterpart in the navigation snapshot the phone
+  // drives. Showing it directly (and releasing the hold on every other page)
+  // keeps it from being mapped back to Navigation by the snapshot.
+  ESP_LOGI(kTag, "page_changed -> %u", static_cast<unsigned>(page));
+  moto_nav_ui_hold_selected_page(page);
+  if (page == MOTO_UI_PAGE_MESSAGES) {
+    return;
+  }
+
   {
     const std::lock_guard<std::mutex> lock(self->state_mutex_);
     self->snapshot_.display_page = map_nav_page(page);

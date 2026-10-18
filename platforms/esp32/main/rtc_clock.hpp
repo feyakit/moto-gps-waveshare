@@ -327,6 +327,11 @@ class LocalClock {
     base_.day = day;
     base_.hour = static_cast<std::uint8_t>(minutes / 60U);
     base_.minute = static_cast<std::uint8_t>(minutes % 60U);
+    // Zero the seconds rather than keeping the chip's old value. The phone
+    // only names the minute, so a retained second (say 59) made the board roll
+    // into the next minute almost immediately: told "15:05" at 15:05:01 it
+    // would show 15:06 fifty-eight seconds early.
+    base_.second = 0;
     base_.weekday = (weekday >= 1U && weekday <= 7U)
                         ? weekday
                         : iso_weekday(base_.year, month, day);
@@ -377,8 +382,19 @@ class LocalClock {
   bool enabled_ = false;
 };
 
-// How far the RTC may drift before the phone's next push is allowed to correct
-// it. Beyond this the two would visibly disagree on the clock page.
-constexpr std::uint32_t kWritebackToleranceSeconds = 90;
+// How far the RTC may drift before the phone's next push corrects it.
+//
+// This used to be 90 s, on the reasoning that a small difference is not worth
+// a flash write. In practice that meant the correction never ran: a typical
+// 32.768 kHz crystal drifts by seconds per day, so the board stayed just under
+// the threshold and drifted for weeks without ever being pulled back. The
+// tolerance is now small enough that any phone connection re-anchors the chip,
+// and a write costs one I2C transaction per connection, not per second.
+// The phone only sends whole minutes, so the two clocks always differ by
+// 0..59 s even when both are "right". The tolerance therefore has to sit above
+// a minute to avoid a flash write on every connection, but far below the old
+// 90 s, which the crystal's daily drift never crossed -- the chip was never
+// corrected at all.
+constexpr std::uint32_t kWritebackToleranceSeconds = 75;
 
 }  // namespace moto::rtc_clock

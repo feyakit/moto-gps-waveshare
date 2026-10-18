@@ -174,6 +174,8 @@ class PhoneNavBridge {
     char title[moto::ancs::kTitleLength] = {};
     char message[moto::ancs::kMessageLength] = {};
     std::uint32_t hold_ms = 0;
+    // Receive time in minutes since local midnight, for the history page.
+    std::uint16_t local_minutes = MOTO_UI_CLOCK_UNKNOWN;
   };
   NotificationRender notification_state_{};
   bool has_notification_ = false;
@@ -199,6 +201,9 @@ class PhoneNavBridge {
   RtcWriteCallback rtc_hook_ = nullptr;
   void* rtc_hook_context_ = nullptr;
   moto_ui_clock_t render_clock_state_{};
+  // Hands ease towards their target; render frames are requested until this
+  // deadline so the sweep is visible instead of one discrete jump per second.
+  std::uint64_t clock_animation_until_ms_ = 0;
   std::uint8_t status_battery_percent_ = 0xFFU;
   std::uint8_t status_battery_charging_ = 0U;
   std::uint8_t status_link_bars_ = 0U;

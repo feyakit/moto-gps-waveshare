@@ -1,5 +1,7 @@
 #include "moto/audio/chime_policy.hpp"
 
+#include "moto/audio/voice_distance.hpp"
+
 #include <algorithm>
 
 namespace moto::audio {
@@ -28,19 +30,22 @@ moto_tone_t arrival_tone(nav::ManeuverType maneuver) {
   }
 }
 
-void push(ChimeEvent& event, moto_tone_t tone, moto_voice_phrase_t voice);
+void push(ChimeEvent& event, moto_tone_t tone, moto_voice_phrase_t voice,
+          moto_voice_phrase_t prefix = MOTO_VOICE_NONE);
 
 void push(ChimeEvent& event, moto_tone_t tone) {
   push(event, tone, MOTO_VOICE_NONE);
 }
 
-void push(ChimeEvent& event, moto_tone_t tone, moto_voice_phrase_t voice) {
+void push(ChimeEvent& event, moto_tone_t tone, moto_voice_phrase_t voice,
+          moto_voice_phrase_t prefix) {
   if ((tone == MOTO_TONE_NONE && voice == MOTO_VOICE_NONE) ||
       event.count >= ChimeEvent::kMaxTones) {
     return;
   }
   event.tones[event.count] = tone;
   event.voices[event.count] = voice;
+  event.prefixes[event.count] = prefix;
   ++event.count;
 }
 
@@ -126,7 +131,8 @@ ChimeEvent ChimePolicy::update(const ChimeInputs& inputs) {
       announced_far_ = true;
       announced_near_ = true;
       push(event, arrival_tone(inputs.maneuver),
-           arrival_voice(inputs.maneuver));
+           arrival_voice(inputs.maneuver),
+           distance_phrase(inputs.distance_to_maneuver_m));
     } else if (!announced_far_ && distance <= far_m) {
       announced_far_ = true;
       push(event, MOTO_TONE_TURN_AHEAD);

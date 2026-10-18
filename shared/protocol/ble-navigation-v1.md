@@ -163,6 +163,8 @@ START 当且仅当 `fragment_offset == 0`。END 当且仅当
 | `0x12` | TrafficDeviation | 手机→设备 | 交通或偏航变化时 |
 | `0x13` | MediaState | 手机→设备 | 曲目/播放变化，进度最高 1 Hz |
 | `0x14` | MapScene | 手机→设备 | 前进约 100 m、跨离线分块或路线改变时 |
+| `0x15` | ClockState | 手机→设备 | 连接时发送，之后每分钟最多一次 |
+| `0x16` | TripState | 手机→设备 | 连接时发送，之后行程数据变化时最高 1 Hz |
 | `0x20` | DeviceCommand | 设备→手机 | 用户动作，ACK_REQUESTED+URGENT |
 
 ## 6. Payload 编码
@@ -214,7 +216,7 @@ u8  revision
 u8  state                 0 Idle, 1 Acquiring, 2 Planning,
                           3 Navigating, 4 Rerouting, 5 Arrived
 u8  network               0 Offline, 1 Connecting, 2 Online
-u8  display_page          0 Navigation, 1 Speed, 2 Compass, 3 Music
+u8  display_page          0 Navigation, 1 Speed, 2 Compass, 3 Music, 4 Clock, 5 Trip
 u8  maneuver              0..12，与 shared ManeuverType 顺序一致
 u8  traffic               0 Unknown, 1 FreeFlow, 2 Slow,
                           3 Congested, 4 Severe
@@ -380,7 +382,46 @@ repeat building_count:
 校验并原子提交后，经 `NavPresenter` 交给道路与建筑 LVGL 图层。代码接入不等于
 所有地区的地图覆盖、弱网或道路实测已经验收。
 
-### 6.9 DeviceCommand (`0x20`, 固定 13 字节)
+### 6.9 ClockState (`0x15`, 固定 6 字节)
+
+```text
+u8  revision
+u16 local_time_minutes     0..1439，本地午夜起的分钟数；0xFFFF 表示未知
+u8  weekday                1 周一 .. 7 周日（ISO-8601）；0 未知
+u8  month                  1..12；0 未知
+u8  day                    1..31；0 未知
+```
+
+`ClockState` 是一条独立的手机→设备消息，使导航、几何、路况和媒体 payload 保持字节不变。
+手机拥有自己的墙钟和时区：它发送的是相对**手机本地**午夜的分钟数，不要求设备解释 UTC。
+`0xFFFF` 表示"还没有可信的本地时间"，手机断开后圆屏也回到该状态；圆屏不得自行继续走时显示
+过期时间。该消息不带 ACK，重连后重发，并在分钟跳变时重发。ESP32 的 `PhoneNavBridge` 通过
+`moto_nav_ui_set_clock` 把它渲染到时钟页。
+
+### 6.10 TripState (`0x16`, 固定 16 字节)
+
+```text
+u8  revision
+u32 distance_m             行程累计距离，米
+u32 moving_time_s          移动时间，秒
+u32 elevation_gain_m       累计爬升，米
+u16 max_speed_deci_kph     最高速度，0.1 km/h
+u8  flags                  bit0 正在记录，bit1 爬升数据有效
+```
+
+行程数据由手机累加和持有：设备不保存里程，也不推断速度。这样重启固件、切换手机或
+重新连接都不会丢失或重复累计。手机只发送合计值，平均速度由设备用 `distance_m /
+moving_time_s` 推导，避免两端用不同的取整规则算出不同的数字。
+
+`flags` 的 bit0 表示手机正在记录本段行程（页面显示 `REC`）；bit1 表示海拔爬升可用，
+否则圆屏显示 `CLIMB --` 而不是把 0 当成"没有爬升"。`distance_m = 0` 且未记录时圆屏
+显示 `NO TRIP`。设备忽略未知的 flags 位，手机不得依赖它们。
+
+设备长按行程页（任意位置）会发送 `DeviceCommand`，kind = 32 TripReset，手机收到后清零
+累计值并回一条 `TripState`。圆屏不显示重置提示：长按是仪表上少见的动作，提示文字会
+长期占用本就紧张的圆屏面积。
+
+### 6.11 DeviceCommand (`0x20`, 固定 13 字节)
 
 ```text
 u8  revision
@@ -393,7 +434,8 @@ u32 event_time_ms           设备单调时钟低 32 位
 ```
 
 kind：0 PageSelected、1 Tap、2 LongPress、3 SwipeLeft、4 SwipeRight、5 SwipeUp、
-6 SwipeDown、16 MusicPrevious、17 MusicTogglePlayback、18 MusicNext、19 MusicLike。
+6 SwipeDown、16 MusicPrevious、17 MusicTogglePlayback、18 MusicNext、19 MusicLike、
+32 TripReset。
 音乐命令沿用 `shared/nav_ui` 的四个动作。触摸坐标是屏幕像素；滑动方向已经归一化，
 手机不应再次用坐标推断方向。
 
@@ -465,6 +507,18 @@ ACK_REQUESTED+URGENT 的两个分片：
 ```text
 b701200d341200000d000112341203ffffff6793
 b701200e341208000d00ff40302010ef35
+```
+
+ClockState payload（本地 08:30，周六 10 月 17 日）：
+
+```text
+01fe01060a11
+```
+
+TripState payload（12.345 km、3912 s、187 m、97.3 km/h，正在记录且爬升有效）：
+
+```text
+013930000040060000bb000000cd0303
 ```
 
 机器可读的完整向量以 fixture 为准。修改任何 v1 字节都应先解释兼容性影响，并由

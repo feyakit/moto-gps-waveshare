@@ -116,6 +116,8 @@ enum class MessageType : std::uint8_t {
   TrafficDeviation = 0x12,
   MediaState = 0x13,
   MapScene = 0x14,
+  ClockState = 0x15,
+  TripState = 0x16,
   DeviceCommand = 0x20,
 };
 
@@ -356,6 +358,10 @@ enum class DisplayPage : std::uint8_t {
   Speed = 1,
   Compass = 2,
   Music = 3,
+  Clock = 4,
+  // Appended so the existing page numbers stay byte-for-byte stable on the
+  // wire. The visual swipe order is owned by the board's UI page enum.
+  Trip = 5,
 };
 
 enum NavigationFlag : std::uint16_t {
@@ -525,6 +531,52 @@ struct MapScene {
   bool operator==(const MapScene& rhs) const noexcept;
 };
 
+// Sentinel for a phone that has no trustworthy local wall-clock yet. 0xFFFF is
+// not a possible minutes-since-midnight value, so it cannot be confused with a
+// real 23:59 reading.
+constexpr std::uint16_t kUnknownLocalTime = 0xFFFFU;
+
+// Phone-local wall-clock shown on the round display's Clock page. Kept as its
+// own low-rate message (rather than a NavigationSnapshot field) so the existing
+// navigation, geometry, traffic and media payloads stay byte-for-byte
+// unchanged; see shared/protocol/ble-navigation-v1.en.md.
+struct ClockState {
+  // Minutes since local midnight, 0..1439, or kUnknownLocalTime.
+  std::uint16_t local_time_minutes = kUnknownLocalTime;
+  // ISO-8601 weekday: 1 Monday .. 7 Sunday; 0 when unknown.
+  std::uint8_t weekday = 0;
+  // Local calendar month/day; 0 when unknown.
+  std::uint8_t month = 0;
+  std::uint8_t day = 0;
+
+  bool operator==(const ClockState& rhs) const noexcept;
+};
+
+enum TripFlag : std::uint8_t {
+  // Set while the phone is accumulating the current ride. A cleared bit means
+  // the phone has no trip yet and the board shows the empty state.
+  TripRecording = 1U << 0U,
+  // Set when elevation_gain_m is trustworthy; GNSS altitude is noisy enough
+  // that the phone only claims it after enough vertical samples.
+  TripElevationKnown = 1U << 1U,
+};
+
+constexpr std::uint8_t kKnownTripFlags = TripRecording | TripElevationKnown;
+
+// Cumulative ride totals for the round display's Trip page. The phone owns the
+// accumulation because it already receives every GNSS fix; the board keeps no
+// odometer across power cycles and never invents distance of its own. Sent as
+// its own low-rate message for the same reason as ClockState.
+struct TripState {
+  std::uint32_t distance_m = 0;
+  std::uint32_t moving_time_s = 0;
+  std::uint32_t elevation_gain_m = 0;
+  std::uint16_t max_speed_deci_kph = 0;
+  std::uint8_t flags = 0;
+
+  bool operator==(const TripState& rhs) const noexcept;
+};
+
 enum class DeviceCommandKind : std::uint8_t {
   PageSelected = 0,
   Tap = 1,
@@ -537,6 +589,8 @@ enum class DeviceCommandKind : std::uint8_t {
   MusicTogglePlayback = 17,
   MusicNext = 18,
   MusicLike = 19,
+  // Zeroes the phone-side trip totals; the board keeps no odometer of its own.
+  TripReset = 32,
 };
 
 constexpr std::uint16_t kUnknownTouchCoordinate = 0xFFFFU;
@@ -560,6 +614,8 @@ using Message = std::variant<ConnectionStatus,
                              TrafficDeviation,
                              MediaState,
                              MapScene,
+                             ClockState,
+                             TripState,
                              DeviceCommand>;
 
 using MessageResult = Result<Message>;

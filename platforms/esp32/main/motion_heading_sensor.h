@@ -6,7 +6,11 @@
 
 class MotionHeadingSensor {
  public:
+  // `accel_mps2` is the raw gravity-inclusive acceleration magnitude.  The
+  // heading path ignores it; the parked/idle screen policy uses it to tell a
+  // running engine (chassis vibration) from a switched-off bike.
   using SampleCallback = void (*)(float heading_rate_dps,
+                                  float accel_mps2,
                                   std::uint64_t sample_ms,
                                   void* context);
 

@@ -17,7 +17,7 @@ constexpr double kVehicleX = MOTO_UI_CANVAS_WIDTH / 2.0;
 constexpr double kVehicleY = 196.0 * kUiScale;
 // A navigation minimap is a spatial frame of reference, so it must not jump
 // between zoom levels as a maneuver counter crosses an arbitrary threshold.
-// This fixed street-scale view shows roughly 400 m ahead on the 466 px round
+// This fixed street-scale view shows roughly 400 m ahead on the 480 px round
 // display and is shared by the selected route and all context roads.
 constexpr double kMapPixelsPerMeter = 0.44 * kUiScale;
 
@@ -47,6 +47,8 @@ moto_ui_page_t map_page(DisplayPage page) {
     case DisplayPage::Speed: return MOTO_UI_PAGE_SPEED;
     case DisplayPage::Compass: return MOTO_UI_PAGE_COMPASS;
     case DisplayPage::Music: return MOTO_UI_PAGE_MUSIC;
+    case DisplayPage::Clock: return MOTO_UI_PAGE_CLOCK;
+    case DisplayPage::Trip: return MOTO_UI_PAGE_TRIP;
   }
   return MOTO_UI_PAGE_NAVIGATION;
 }

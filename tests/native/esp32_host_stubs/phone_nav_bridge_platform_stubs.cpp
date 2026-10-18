@@ -123,6 +123,8 @@ extern "C" void moto_nav_ui_set_phone_connection(
 
 extern "C" void moto_nav_ui_set_reduce_motion(uint8_t) {}
 extern "C" void moto_nav_ui_set_page(moto_ui_page_t) {}
+
+extern "C" void moto_nav_ui_hold_selected_page(moto_ui_page_t) {}
 extern "C" moto_ui_page_t moto_nav_ui_get_page(void) {
   return MOTO_UI_PAGE_NAVIGATION;
 }

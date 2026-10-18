@@ -42,6 +42,8 @@ enum class DisplayPage : std::uint8_t {
   Speed,
   Compass,
   Music,
+  Clock,
+  Trip,
 };
 
 enum class ManeuverType : std::uint8_t {

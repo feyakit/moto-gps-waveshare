@@ -163,7 +163,7 @@ void MotionHeadingSensor::run() {
             accel > 8.2F && accel < 11.4F) {
           bias_dps += (raw_rate - bias_dps) * 0.0008F;
         }
-        callback_(corrected_rate, monotonic_ms(), callback_context_);
+        callback_(corrected_rate, accel, monotonic_ms(), callback_context_);
       }
     }
     if (result != ESP_OK && ++consecutive_failures == 25) {

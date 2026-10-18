@@ -192,6 +192,25 @@ MapScene full_map_scene_fixture() {
   return value;
 }
 
+ClockState clock_fixture() {
+  ClockState value;
+  value.local_time_minutes = 8 * 60 + 30;  // 08:30 local
+  value.weekday = 6;                        // Saturday (ISO-8601)
+  value.month = 10;
+  value.day = 17;
+  return value;
+}
+
+TripState trip_fixture() {
+  TripState value;
+  value.distance_m = 12'345;             // 12.345 km
+  value.moving_time_s = 26 * 60 + 40;    // 00:26:40 moving
+  value.elevation_gain_m = 187;
+  value.max_speed_deci_kph = 973;        // 97.3 km/h
+  value.flags = TripRecording | TripElevationKnown;
+  return value;
+}
+
 DeviceCommand command_fixture() {
   DeviceCommand value;
   value.kind = DeviceCommandKind::MusicNext;
@@ -262,6 +281,8 @@ void dump_golden() {
   const Bytes navigation = encode_or_fail(Message{navigation_fixture()});
   const Bytes geometry = encode_or_fail(Message{geometry_fixture()});
   const Bytes command = encode_or_fail(Message{command_fixture()});
+  const Bytes clock = encode_or_fail(Message{clock_fixture()});
+  const Bytes trip = encode_or_fail(Message{trip_fixture()});
   std::cout << "connection.payload=" << hex(ByteView(connection)) << '\n';
   std::cout << "connection.frame="
             << frame_hex(fragment_or_fail(MessageType::ConnectionStatus, 1,
@@ -270,6 +291,8 @@ void dump_golden() {
   std::cout << "navigation.payload=" << hex(ByteView(navigation)) << '\n';
   std::cout << "geometry.payload=" << hex(ByteView(geometry)) << '\n';
   std::cout << "command.payload=" << hex(ByteView(command)) << '\n';
+  std::cout << "clock.payload=" << hex(ByteView(clock)) << '\n';
+  std::cout << "trip.payload=" << hex(ByteView(trip)) << '\n';
   std::cout << "command.frames20="
             << frame_hex(fragment_or_fail(MessageType::DeviceCommand,
                                           0x1234U, command, 20,
@@ -324,6 +347,8 @@ void test_all_message_round_trips() {
       Message{traffic_fixture()},
       Message{media_fixture()},
       Message{map_scene_fixture()},
+      Message{clock_fixture()},
+      Message{trip_fixture()},
       Message{command_fixture()},
   };
   for (const Message& message : messages) {
@@ -347,6 +372,8 @@ void test_golden_vectors() {
   const Bytes navigation = encode_or_fail(Message{navigation_fixture()});
   const Bytes geometry = encode_or_fail(Message{geometry_fixture()});
   const Bytes command = encode_or_fail(Message{command_fixture()});
+  const Bytes clock = encode_or_fail(Message{clock_fixture()});
+  const Bytes trip = encode_or_fail(Message{trip_fixture()});
 
   CHECK(expected.at("connection.payload") == hex(ByteView(connection)));
   CHECK(expected.at("connection.frame") ==
@@ -355,6 +382,8 @@ void test_golden_vectors() {
   CHECK(expected.at("navigation.payload") == hex(ByteView(navigation)));
   CHECK(expected.at("geometry.payload") == hex(ByteView(geometry)));
   CHECK(expected.at("command.payload") == hex(ByteView(command)));
+  CHECK(expected.at("clock.payload") == hex(ByteView(clock)));
+  CHECK(expected.at("trip.payload") == hex(ByteView(trip)));
   CHECK(expected.at("command.frames20") ==
         frame_hex(fragment_or_fail(MessageType::DeviceCommand, 0x1234U,
                                    command, 20,
@@ -528,6 +557,34 @@ void test_validation_failures() {
   invalid_navigation.heading_cdeg = 36'000;
   CHECK(encode_message(Message{invalid_navigation}).error ==
         Error::OutOfRange);
+
+  ClockState unknown_clock = clock_fixture();
+  unknown_clock.local_time_minutes = kUnknownLocalTime;
+  CHECK(encode_message(Message{unknown_clock}).ok());
+
+  ClockState invalid_clock = clock_fixture();
+  invalid_clock.local_time_minutes = 24 * 60;
+  CHECK(encode_message(Message{invalid_clock}).error == Error::OutOfRange);
+
+  ClockState lone_month = clock_fixture();
+  lone_month.day = 0;
+  CHECK(encode_message(Message{lone_month}).error == Error::OutOfRange);
+
+  TripState empty_trip = trip_fixture();
+  empty_trip.flags = 0;
+  CHECK(encode_message(Message{empty_trip}).ok());
+
+  TripState unknown_trip_flag = trip_fixture();
+  unknown_trip_flag.flags = static_cast<std::uint8_t>(1U << 7U);
+  CHECK(encode_message(Message{unknown_trip_flag}).error == Error::OutOfRange);
+
+  TripState impossible_trip = trip_fixture();
+  impossible_trip.max_speed_deci_kph = 20'001;
+  CHECK(encode_message(Message{impossible_trip}).error == Error::OutOfRange);
+
+  TripState huge_trip = trip_fixture();
+  huge_trip.distance_m = 100'000'001U;
+  CHECK(encode_message(Message{huge_trip}).error == Error::OutOfRange);
 
   RouteGeometry invalid_geometry = geometry_fixture();
   invalid_geometry.view_origin.latitude_e6 = 91'000'000;

@@ -238,7 +238,7 @@ bool valid_coordinate_system(CoordinateSystem system) {
 }
 
 bool valid_display_page(DisplayPage page) {
-  return enum_at_most(page, DisplayPage::Music);
+  return enum_at_most(page, DisplayPage::Trip);
 }
 
 bool valid_map_road_class(MapRoadClass road_class) {
@@ -262,6 +262,7 @@ bool valid_command_kind(DeviceCommandKind kind) {
     case DeviceCommandKind::MusicTogglePlayback:
     case DeviceCommandKind::MusicNext:
     case DeviceCommandKind::MusicLike:
+    case DeviceCommandKind::TripReset:
       return true;
   }
   return false;
@@ -474,6 +475,37 @@ Error validate(const MapScene& value) {
   return Error::None;
 }
 
+Error validate(const ClockState& value) {
+  if (value.local_time_minutes != kUnknownLocalTime &&
+      value.local_time_minutes >= 24U * 60U) {
+    return Error::OutOfRange;
+  }
+  if (value.weekday > 7) {
+    return Error::OutOfRange;
+  }
+  if ((value.month == 0) != (value.day == 0) || value.month > 12 ||
+      value.day > 31) {
+    return Error::OutOfRange;
+  }
+  return Error::None;
+}
+
+Error validate(const TripState& value) {
+  if ((value.flags & ~kKnownTripFlags) != 0U) {
+    return Error::OutOfRange;
+  }
+  // Sanity ceilings that only exist to reject garbage, not to shape product
+  // limits: 100 000 km, 100 days of moving time, 20 000 m of climbing and
+  // 2 000 km/h. Any real ride stays far below all four.
+  if (value.distance_m > 100'000'000U ||
+      value.moving_time_s > 100U * 24U * 60U * 60U ||
+      value.elevation_gain_m > 20'000U ||
+      value.max_speed_deci_kph > 20'000U) {
+    return Error::OutOfRange;
+  }
+  return Error::None;
+}
+
 Error validate(const DeviceCommand& value) {
   if (!valid_command_kind(value.kind) || !valid_display_page(value.page)) {
     return Error::InvalidEnum;
@@ -607,6 +639,17 @@ BytesResult encode_payload(const T& value) {
       writer.u8(static_cast<std::uint8_t>(building.building_class));
       write_points(building.points);
     }
+  } else if constexpr (std::is_same_v<T, ClockState>) {
+    writer.u16(value.local_time_minutes);
+    writer.u8(value.weekday);
+    writer.u8(value.month);
+    writer.u8(value.day);
+  } else if constexpr (std::is_same_v<T, TripState>) {
+    writer.u32(value.distance_m);
+    writer.u32(value.moving_time_s);
+    writer.u32(value.elevation_gain_m);
+    writer.u16(value.max_speed_deci_kph);
+    writer.u8(value.flags);
   } else if constexpr (std::is_same_v<T, DeviceCommand>) {
     writer.u8(static_cast<std::uint8_t>(value.kind));
     writer.u16(value.command_id);
@@ -885,6 +928,33 @@ MessageResult decode_map_scene(ByteView payload) {
       }
       reader.require_end();
     }
+  }
+  return decoded_result(std::move(value), reader);
+}
+
+MessageResult decode_clock_state(ByteView payload) {
+  Reader reader(payload);
+  ClockState value;
+  if (begin_payload(reader)) {
+    value.local_time_minutes = reader.u16();
+    value.weekday = reader.u8();
+    value.month = reader.u8();
+    value.day = reader.u8();
+    reader.require_end();
+  }
+  return decoded_result(std::move(value), reader);
+}
+
+MessageResult decode_trip_state(ByteView payload) {
+  Reader reader(payload);
+  TripState value;
+  if (begin_payload(reader)) {
+    value.distance_m = reader.u32();
+    value.moving_time_s = reader.u32();
+    value.elevation_gain_m = reader.u32();
+    value.max_speed_deci_kph = reader.u16();
+    value.flags = reader.u8();
+    reader.require_end();
   }
   return decoded_result(std::move(value), reader);
 }
@@ -1448,6 +1518,18 @@ bool MapScene::operator==(const MapScene& rhs) const noexcept {
                   rhs.view_origin, rhs.radius_m, rhs.roads, rhs.buildings);
 }
 
+bool ClockState::operator==(const ClockState& rhs) const noexcept {
+  return std::tie(local_time_minutes, weekday, month, day) ==
+         std::tie(rhs.local_time_minutes, rhs.weekday, rhs.month, rhs.day);
+}
+
+bool TripState::operator==(const TripState& rhs) const noexcept {
+  return std::tie(distance_m, moving_time_s, elevation_gain_m,
+                  max_speed_deci_kph, flags) ==
+         std::tie(rhs.distance_m, rhs.moving_time_s, rhs.elevation_gain_m,
+                  rhs.max_speed_deci_kph, rhs.flags);
+}
+
 bool DeviceCommand::operator==(const DeviceCommand& rhs) const noexcept {
   return std::tie(kind, command_id, page, x, y, event_time_ms) ==
          std::tie(rhs.kind, rhs.command_id, rhs.page, rhs.x, rhs.y,
@@ -1474,6 +1556,10 @@ MessageType message_type(const Message& message) noexcept {
           return MessageType::MediaState;
         } else if constexpr (std::is_same_v<T, MapScene>) {
           return MessageType::MapScene;
+        } else if constexpr (std::is_same_v<T, ClockState>) {
+          return MessageType::ClockState;
+        } else if constexpr (std::is_same_v<T, TripState>) {
+          return MessageType::TripState;
         } else {
           return MessageType::DeviceCommand;
         }
@@ -1500,6 +1586,8 @@ MessageResult decode_message(MessageType type, ByteView payload) {
       return decode_traffic_deviation(payload);
     case MessageType::MediaState: return decode_media_state(payload);
     case MessageType::MapScene: return decode_map_scene(payload);
+    case MessageType::ClockState: return decode_clock_state(payload);
+    case MessageType::TripState: return decode_trip_state(payload);
     case MessageType::DeviceCommand:
       return decode_device_command(payload);
   }

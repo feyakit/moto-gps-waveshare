@@ -191,6 +191,8 @@ Byte 0 of every logical payload is `payload_revision=1`.
 | `0x12` | TrafficDeviation | phone→device | when traffic or off-route state changes |
 | `0x13` | MediaState | phone→device | track / playback change, progress at most 1 Hz |
 | `0x14` | MapScene | phone→device | after about 100 m of travel, on crossing an offline tile, or on a route change |
+| `0x15` | ClockState | phone→device | on connecting, then at most once per minute |
+| `0x16` | TripState | phone→device | on connecting, then at most 1 Hz while the trip changes |
 | `0x20` | DeviceCommand | device→phone | user action, ACK_REQUESTED+URGENT |
 
 ## 6. Payload encoding
@@ -243,7 +245,7 @@ u8  revision
 u8  state                 0 Idle, 1 Acquiring, 2 Planning,
                           3 Navigating, 4 Rerouting, 5 Arrived
 u8  network               0 Offline, 1 Connecting, 2 Online
-u8  display_page          0 Navigation, 1 Speed, 2 Compass, 3 Music
+u8  display_page          0 Navigation, 1 Speed, 2 Compass, 3 Music, 4 Clock, 5 Trip
 u8  maneuver              0..12, in the same order as the shared ManeuverType
 u8  traffic               0 Unknown, 1 FreeFlow, 2 Slow,
                           3 Congested, 4 Severe
@@ -422,7 +424,50 @@ C++ codec; the ESP32 `PhoneNavBridge` validates and atomically commits it, then 
 `NavPresenter` to the road and building LVGL layers. Implementing this path does not establish
 that map coverage in every region, weak-network behavior or road testing has been accepted.
 
-### 6.9 DeviceCommand (`0x20`, fixed 13 bytes)
+### 6.9 ClockState (`0x15`, fixed 6 bytes)
+
+```text
+u8  revision
+u16 local_time_minutes     0..1439 minutes since local midnight, or 0xFFFF unknown
+u8  weekday                1 Monday .. 7 Sunday (ISO-8601); 0 unknown
+u8  month                  1..12; 0 when unknown
+u8  day                    1..31; 0 when unknown
+```
+
+`ClockState` is a standalone phone→device message so the navigation, geometry, traffic and media
+payloads stay unchanged. The phone owns its wall-clock and its time zone: it sends minutes since
+its own local midnight and never asks the device to interpret UTC. `0xFFFF` means "no trustworthy
+local time yet", which is also what the display shows after the phone disconnects; the round
+display must not keep ticking a stale value on its own. The message has no ACK and is re-sent after
+a reconnect and whenever the minute rolls over. The ESP32 `PhoneNavBridge` renders it on the Clock
+page through `moto_nav_ui_set_clock`.
+
+### 6.10 TripState (`0x16`, fixed 16 bytes)
+
+```text
+u8  revision
+u32 distance_m             accumulated trip distance in metres
+u32 moving_time_s          moving time in seconds
+u32 elevation_gain_m       accumulated climb in metres
+u16 max_speed_deci_kph     highest speed in 0.1 km/h
+u8  flags                  bit0 recording, bit1 elevation gain known
+```
+
+The phone accumulates and owns the trip. The device stores no odometer and infers no speed, so a
+firmware restart, a phone swap or a reconnect can never lose or double-count distance. The phone
+sends totals only; average speed is derived on the device from `distance_m / moving_time_s`, which
+keeps both ends from disagreeing through different rounding rules.
+
+Flag bit0 means the phone is recording this ride (the page shows `REC`). Flag bit1 means the climb
+figure is meaningful; without it the panel shows `CLIMB --` instead of pretending zero metres of
+climb. `distance_m = 0` with recording off renders `NO TRIP`. The device ignores unknown flag bits
+and the phone must not rely on them.
+
+Long-pressing anywhere on the trip page sends a `DeviceCommand` with kind 32 (TripReset); the phone
+resets its accumulators and answers with a fresh `TripState`. The panel shows no reset hint: a long
+press is a rare instrument gesture and the hint would permanently occupy scarce round-screen space.
+
+### 6.11 DeviceCommand (`0x20`, fixed 13 bytes)
 
 ```text
 u8  revision
@@ -514,6 +559,18 @@ ACK_REQUESTED+URGENT:
 ```text
 b701200d341200000d000112341203ffffff6793
 b701200e341208000d00ff40302010ef35
+```
+
+ClockState payload (08:30 local, Saturday 17 October):
+
+```text
+01fe01060a11
+```
+
+TripState payload (12.345 km, 3912 s, 187 m, 97.3 km/h, recording with known elevation):
+
+```text
+013930000040060000bb000000cd0303
 ```
 
 The machine-readable complete vectors are authoritative in the fixture. Changing any v1 byte

@@ -31,6 +31,17 @@ phrases=(
   "已偏航，正在重新规划"
   "请减速"
   "注意安全"
+  # Distance prefixes. Spoken before the action clip: "五百米" + "前方左转"
+  # becomes "五百米前方左转". Kept as separate clips so one recording serves
+  # every maneuver, and the step table maps a real distance onto the nearest
+  # spoken value.
+  "五十米"
+  "一百米"
+  "两百米"
+  "三百米"
+  "五百米"
+  "八百米"
+  "一公里"
 )
 
 tmp="$(mktemp -d)"
@@ -111,7 +122,8 @@ echo "};" >> "${out}"
 echo "" >> "${out}"
 echo "bool moto_voice_phrase_data(moto_voice_phrase_t phrase, const uint8_t** data," >> "${out}"
 echo "                               uint32_t* length) {" >> "${out}"
-echo "    const int index = (int)phrase;" >> "${out}"
+echo "    // MOTO_VOICE_NONE is 0, so the enum values are one past the clip index." >> "${out}"
+echo "    const int index = (int)phrase - 1;" >> "${out}"
 echo "    if (index < 0 || index >= ${#offsets[@]}) return false;" >> "${out}"
 echo "    *data = kBlob + kOffsets[index];" >> "${out}"
 echo "    *length = kLengths[index];" >> "${out}"

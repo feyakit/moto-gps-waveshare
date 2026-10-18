@@ -349,6 +349,17 @@ void test_clock_state_reaches_the_ui_and_clears_on_disconnect() {
   CHECK(rendered.weekday == 1);
   CHECK(rendered.month == 6);
   CHECK(rendered.day == 15);
+  // The phone names a minute, not a second, so the second must come back as
+  // zero rather than the chip's leftover value -- otherwise the dial rolls
+  // into the next minute up to 59 s early.
+  CHECK(rendered.second == 0);
+
+  // The hand animation needs the second to survive a tick, so it is fed from
+  // the board clock between phone pushes.
+  bridge.tick_clock();
+  pump(bridge);
+  const moto_ui_clock_t ticked = moto::test::phone_nav_bridge_clock();
+  CHECK(ticked.second < 60);
 
   // Losing the phone link must clear the phone-dependent state, but the clock
   // is the exception: the board's own RTC kept running, so the page keeps a
@@ -953,7 +964,8 @@ void test_notification_reaches_the_ui_overlay() {
       moto::test::phone_nav_bridge_last_notification();
   CHECK(moto::test::phone_nav_bridge_notification_count() == 1);
   CHECK(std::string(rendered.category) == "INCOMING CALL");
-  CHECK(std::string(rendered.app) == "com.apple.mobilephone");
+  // The card shows a friendly name: ANCS only gives the bundle identifier.
+  CHECK(std::string(rendered.app) == "电话");
   CHECK(std::string(rendered.title) == "段誉");
   CHECK(std::string(rendered.message) == "来电");
   // A call keeps the panel lit long enough to be read.

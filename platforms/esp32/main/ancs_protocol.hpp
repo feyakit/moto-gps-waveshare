@@ -282,6 +282,54 @@ inline const char* category_label(std::uint8_t category) {
   return "NOTIFICATION";
 }
 
+/// Friendly name for the bundle identifiers iOS actually sends.
+///
+/// ANCS returns the AppIdentifier (a reverse-DNS bundle id), not a display
+/// name, so a card without this table reads "com.tencent.xin" where the rider
+/// expects "微信". Unknown identifiers fall through unchanged, which is still
+/// better than guessing.
+inline const char* app_display_name(const char* bundle_id) {
+  if (bundle_id == nullptr) return "";
+  struct Entry {
+    const char* id;
+    const char* name;
+  };
+  static constexpr Entry kNames[] = {
+      {"com.tencent.xin", "微信"},
+      {"com.tencent.mqq", "QQ"},
+      {"com.apple.MobileSMS", "信息"},
+      {"com.apple.mobilephone", "电话"},
+      {"com.apple.mobilemail", "邮件"},
+      {"com.apple.mobilecal", "日历"},
+      {"com.apple.reminders", "提醒事项"},
+      {"com.apple.Preferences", "设置"},
+      {"com.apple.AppStore", "App Store"},
+      {"com.apple.Music", "音乐"},
+      {"com.apple.Maps", "地图"},
+      {"com.alipay.iphoneclient", "支付宝"},
+      {"com.taobao.iphoneclient", "淘宝"},
+      {"com.jd.iphone", "京东"},
+      {"com.meituan.imeituan", "美团"},
+      {"com.dianping.dpmobile", "大众点评"},
+      {"com.tencent.wework", "企业微信"},
+      {"com.sina.weibo", "微博"},
+      {"com.zhihu.ios", "知乎"},
+      {"com.netease.cloudmusic", "网易云音乐"},
+      {"com.bilibili.finder", "哔哩哔哩"},
+      {"com.ss.iphone.ugc.Aweme", "抖音"},
+  };
+  for (const auto& entry : kNames) {
+    const char* a = entry.id;
+    const char* b = bundle_id;
+    while (*a != '\0' && *a == *b) {
+      ++a;
+      ++b;
+    }
+    if (*a == '\0' && *b == '\0') return entry.name;
+  }
+  return bundle_id;
+}
+
 /// An incoming call deserves a longer look than a chat message.
 inline std::uint32_t banner_hold_ms(const NotificationSource& source) {
   if (source.is_incoming_call()) {

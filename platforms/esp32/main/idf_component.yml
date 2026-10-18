@@ -1,12 +1,14 @@
 dependencies:
-  waveshare/esp32_s3_touch_amoled_1_75c:
-    version: "3.0.0"
+  waveshare/esp32_s3_touch_amoled_2_16:
+    version: "^2.0.1"
+  espressif/esp_lcd_touch_cst9220:
+    version: "^0.1.1"
   # Official board example uses this component for the onboard QMI8658.
   # We use its gyroscope only as a fast, short-term yaw increment; the phone's
   # motion course remains the long-term heading reference.
   waveshare/qmi8658:
     version: "^2.0.0"
-  # The official Waveshare 1.75C LVGL-9 example pins 9.5.0. Point the
+  # The Waveshare 2.16 LVGL-9 example uses LVGL 9.x. Pin 9.5.0 and point the
   # Component Manager at the repository submodule so Web and firmware compile
   # the exact same checkout rather than resolving two independent copies.
   lvgl/lvgl:

@@ -35,6 +35,9 @@ struct ChimeEvent {
   /// the rider is not talked at.
   moto_tone_t tones[kMaxTones] = {MOTO_TONE_NONE, MOTO_TONE_NONE};
   moto_voice_phrase_t voices[kMaxTones] = {MOTO_VOICE_NONE, MOTO_VOICE_NONE};
+  /// Optional clip played immediately before `voices[i]`: the distance prefix
+  /// of a spoken turn ("三百米" then "前方左转"). MOTO_VOICE_NONE means none.
+  moto_voice_phrase_t prefixes[kMaxTones] = {MOTO_VOICE_NONE, MOTO_VOICE_NONE};
   std::uint8_t count = 0;
 
   [[nodiscard]] bool empty() const { return count == 0; }

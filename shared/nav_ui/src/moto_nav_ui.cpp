@@ -88,7 +88,12 @@ struct MapPolyline {
 
 // Notification card geometry and the history ring. Declared before Ui because
 // the history entries are sized from these.
-constexpr int kNotificationTextWidth = 380;
+// Design-space width for the card text. The round panel is 480 px across at
+// its widest, but the chord shrinks fast away from the middle: at the top of
+// the title band only ~416 px is visible, and near the bottom of the body only
+// ~358 px. 260 design px scales to ~347 real px, which stays inside the glass
+// at every row the card uses and still leaves a readable line length.
+constexpr int kNotificationTextWidth = 260;
 constexpr int kNotificationTitleHeight = 124;
 constexpr int kNotificationMessageHeight = 150;
 constexpr int kNotificationHistorySize = 8;
@@ -101,6 +106,15 @@ struct Ui {
     lv_timer_t *page_dots_timer = nullptr;
     moto_ui_page_t page = MOTO_UI_PAGE_NAVIGATION;
     bool page_dots_visible = true;
+    // True while the rider is on the local Messages page. The phone never
+    // drives this page, so snapshot-driven page changes are ignored until the
+    // rider swipes away.
+    // True once the rider has swiped away from the navigation page. While it is
+    // set, snapshot-driven page changes are ignored: navigation snapshots keep
+    // arriving several times a second during a ride, and letting them choose
+    // the page yanked the rider back to Navigation on every update -- the
+    // visible "flash and snap back" when turning the wheel.
+    bool user_selected_page = false;
 
     lv_obj_t *nav_map = nullptr;
     lv_obj_t *nav_buildings[MOTO_UI_BUILDING_FOOTPRINT_CAPACITY]{};
@@ -188,13 +202,18 @@ struct Ui {
         char app[kNotificationTextCapacity]{};
         char title[kNotificationTextCapacity]{};
         char message[kNotificationTextCapacity]{};
+        uint16_t local_minutes = MOTO_UI_CLOCK_UNKNOWN;
     };
     HistoryEntry notification_history[kNotificationHistorySize]{};
     int notification_head = 0;
     int notification_total = 0;
     // History page rows: title line plus the app/time line under it.
     lv_obj_t *history_rows[kNotificationHistorySize]{};
+    // Second line of each entry: the body, which is what makes the log useful
+    // at a glance instead of a list of app names.
+    lv_obj_t *history_bodies[kNotificationHistorySize]{};
     lv_obj_t *history_empty = nullptr;
+    lv_obj_t *history_back = nullptr;
     lv_timer_t *nav_success_timer = nullptr;
     moto_ui_phone_connection_t phone_connection = MOTO_UI_PHONE_OFFLINE;
     LifecycleVisual lifecycle_visual = LifecycleVisual::Hidden;
@@ -220,6 +239,24 @@ struct Ui {
     lv_point_precise_t clock_tick_points[kClockTickCount][2]{};
     lv_obj_t *clock_time = nullptr;
     lv_obj_t *clock_date = nullptr;
+    // Sweeping hands, drawn as mutable lines so one tick only rewrites points.
+    lv_obj_t *clock_hand_hour = nullptr;
+    lv_obj_t *clock_hand_minute = nullptr;
+    lv_obj_t *clock_hand_second = nullptr;
+    lv_point_precise_t clock_hand_hour_points[2]{};
+    lv_point_precise_t clock_hand_minute_points[2]{};
+    lv_point_precise_t clock_hand_second_points[2]{};
+    // Angles actually drawn, eased towards the true time so a tick sweeps
+    // instead of teleporting. -1 means "not positioned yet".
+    double clock_hand_hour_shown = -1.0;
+    double clock_hand_minute_shown = -1.0;
+    double clock_hand_second_shown = -1.0;
+    // Where each sweep started and when, so the angle is a pure function of
+    // the elapsed time.
+    double clock_hand_hour_from = -1.0;
+    double clock_hand_minute_from = -1.0;
+    double clock_hand_second_from = -1.0;
+    std::uint32_t clock_sweep_start_ms = 0;
     moto_ui_clock_t clock{};
 
     lv_obj_t *trip_distance = nullptr;
@@ -350,20 +387,45 @@ void draw_vehicle_marker(lv_event_t *event) {
 
 bool page_available(int index) {
     if(index == MOTO_UI_PAGE_MUSIC) return ui.music_page_enabled;
-    // An empty log is not worth a swipe target; the page appears once the
-    // first notification of the session has been recorded.
-    if(index == MOTO_UI_PAGE_MESSAGES) return ui.notification_total > 0;
+    // The Messages page is always reachable. Hiding it until a notification
+    // arrived made it impossible to tell "the page is missing" apart from
+    // "nothing has arrived yet", and an empty log with an explicit hint is a
+    // better answer than a page that silently is not there.
     return true;
 }
 
 void update_page_dots() {
-    const int base = 178 - (MOTO_UI_PAGE_COUNT - 1) * 11;
+    // Lay the row out from the real widths instead of a fixed pitch. The active
+    // dot is 16 px wide and the rest are 5 px, so a fixed step left the gap
+    // after the active dot at 6 px while every other gap was 17 px.
+    // These are design-space values: everything below goes through px(), which
+    // scales the 360 px design to the real canvas. Mixing a raw pixel centre in
+    // here shifted the whole row to the right by a third of the screen.
+    constexpr int kDotWidth = 5;
+    constexpr int kActiveWidth = 16;
+    constexpr int kGap = 11;
+    constexpr int kRowCenter = kDesignWidth / 2;
+
+    int total = 0;
+    int visible = 0;
+    for(int i = 0; i < MOTO_UI_PAGE_COUNT; ++i) {
+        if(!page_available(i)) continue;
+        total += i == static_cast<int>(ui.page) ? kActiveWidth : kDotWidth;
+        ++visible;
+    }
+    if(visible > 1) total += kGap * (visible - 1);
+
+    int x = kRowCenter - total / 2;
     for(int i = 0; i < MOTO_UI_PAGE_COUNT; ++i) {
         const bool active = i == static_cast<int>(ui.page);
-        lv_obj_set_size(ui.page_dots[i], px(active ? 16 : 5), px(5));
+        const int width = active ? kActiveWidth : kDotWidth;
+        lv_obj_set_size(ui.page_dots[i], px(width), px(5));
         lv_obj_set_style_radius(ui.page_dots[i], px(3), 0);
         lv_obj_set_style_bg_color(ui.page_dots[i], active ? kWhite : kGraphite, 0);
-        lv_obj_set_x(ui.page_dots[i], px(base + i * 22 - (active ? 5 : 0)));
+        if(page_available(i)) {
+            lv_obj_set_x(ui.page_dots[i], px(x));
+            x += width + kGap;
+        }
         if(ui.page_dots_visible && page_available(i)) {
             lv_obj_remove_flag(ui.page_dots[i], LV_OBJ_FLAG_HIDDEN);
         } else {
@@ -426,49 +488,68 @@ void create_notification_overlay() {
                         nullptr);
     lv_obj_add_flag(overlay, LV_OBJ_FLAG_HIDDEN);
 
-    // Category heading, with the count of notifications that arrived in this
-    // burst on the right.
+    // Vertical rhythm for the card, top to bottom. Every band is sized for the
+    // font it holds plus a gap, so nothing can collide when a long app name or
+    // a wrapped title appears:
+    //   44..66   category + unread badge   (16 px)
+    //   74..104  app name                  (20 px)
+    //  116..248  title, up to 2 lines      (34 px)
+    //  258..410  body, up to 3 lines       (28 px)
+    //   424..446  tap hint                 (16 px)
     ui.notification_category =
         make_label(overlay, &lv_font_montserrat_16, kIce, "NOTIFICATION");
     lv_obj_set_style_text_letter_space(ui.notification_category, px(4), 0);
-    lv_obj_align(ui.notification_category, LV_ALIGN_TOP_MID, 0, px(58));
+    lv_obj_set_width(ui.notification_category, px(240));
+    lv_obj_set_style_text_align(ui.notification_category, LV_TEXT_ALIGN_CENTER,
+                                0);
+    lv_obj_align(ui.notification_category, LV_ALIGN_TOP_MID, 0, px(44));
+
     ui.notification_badge = make_label(overlay, &lv_font_montserrat_16, kQuiet,
                                        "");
-    lv_obj_align(ui.notification_badge, LV_ALIGN_TOP_RIGHT, -px(52), px(58));
+    lv_obj_align(ui.notification_badge, LV_ALIGN_TOP_RIGHT, -px(46), px(44));
 
+    // The app line is the bundle identifier when iOS has no display name for
+    // it, so it is centred and dotted rather than given a whole row.
     ui.notification_app = make_label(overlay, &moto_font_notify_20, kQuiet, "");
-    // Bundle identifiers can be long; keep the line inside the round bezel.
-    lv_obj_set_width(ui.notification_app, px(320));
-    lv_obj_set_height(ui.notification_app, px(32));
+    lv_obj_set_width(ui.notification_app, px(300));
+    lv_obj_set_height(ui.notification_app, px(30));
     lv_label_set_long_mode(ui.notification_app, LV_LABEL_LONG_DOT);
     lv_obj_set_style_text_align(ui.notification_app, LV_TEXT_ALIGN_CENTER, 0);
-    lv_obj_align(ui.notification_app, LV_ALIGN_TOP_MID, 0, px(88));
+    lv_obj_align(ui.notification_app, LV_ALIGN_TOP_MID, 0, px(74));
 
-    // Title and body carry the actual message, so they get the large sizes and
-    // wrap instead of truncating: a rider reads this in one glance, and an
-    // ellipsis would hide the part that matters.
+    // Title and body flow in one column so their spacing follows the text
+    // instead of a fixed band: a one-line title used to leave an 80 px gap
+    // before the body started, which looked like a broken layout.
+    lv_obj_t *text_column = lv_obj_create(overlay);
+    lv_obj_remove_style_all(text_column);
+    lv_obj_set_width(text_column, px(kNotificationTextWidth));
+    lv_obj_set_height(text_column, LV_SIZE_CONTENT);
+    lv_obj_set_flex_flow(text_column, LV_FLEX_FLOW_COLUMN);
+    lv_obj_set_style_pad_row(text_column, px(14), 0);
+    lv_obj_set_style_pad_all(text_column, 0, 0);
+    lv_obj_align(text_column, LV_ALIGN_TOP_MID, 0, px(112));
+    lv_obj_clear_flag(text_column, LV_OBJ_FLAG_SCROLLABLE);
+
     ui.notification_title =
-        make_label(overlay, &moto_font_notify_34, kWhite, "");
-    lv_obj_set_width(ui.notification_title, px(kNotificationTextWidth));
-    lv_obj_set_height(ui.notification_title, px(kNotificationTitleHeight));
+        make_label(text_column, &moto_font_notify_34, kWhite, "");
+    lv_obj_set_width(ui.notification_title, lv_pct(100));
     lv_label_set_long_mode(ui.notification_title, LV_LABEL_LONG_WRAP);
     lv_obj_set_style_text_align(ui.notification_title, LV_TEXT_ALIGN_CENTER,
                                 0);
-    lv_obj_align(ui.notification_title, LV_ALIGN_CENTER, 0, px(-58));
 
+    // One size down from the title and in the softer grey: the two lines were
+    // nearly identical before, so the header did not read as a header.
     ui.notification_message =
-        make_label(overlay, &moto_font_notify_28, kSoft, "");
-    lv_obj_set_width(ui.notification_message, px(kNotificationTextWidth));
-    lv_obj_set_height(ui.notification_message, px(kNotificationMessageHeight));
+        make_label(text_column, &moto_font_notify_28, kSoft, "");
+    lv_obj_set_width(ui.notification_message, lv_pct(100));
     lv_label_set_long_mode(ui.notification_message, LV_LABEL_LONG_WRAP);
     lv_obj_set_style_text_align(ui.notification_message, LV_TEXT_ALIGN_CENTER,
                                 0);
-    lv_obj_align(ui.notification_message, LV_ALIGN_CENTER, 0, px(74));
 
     ui.notification_hint = make_label(overlay, &lv_font_montserrat_16, kQuiet,
                                       "TAP TO CLOSE");
     lv_obj_set_style_text_letter_space(ui.notification_hint, px(2), 0);
-    lv_obj_align(ui.notification_hint, LV_ALIGN_BOTTOM_MID, 0, -px(40));
+    lv_obj_align(ui.notification_hint, LV_ALIGN_BOTTOM_MID, 0, -px(30));
 
     ui.notification_timer =
         lv_timer_create(notification_timeout, kNotificationHoldMs, nullptr);
@@ -497,9 +578,6 @@ void show_page(moto_ui_page_t page, bool reveal_on_same_page = false) {
     if(page == MOTO_UI_PAGE_MUSIC && !ui.music_page_enabled) {
         page = MOTO_UI_PAGE_NAVIGATION;
     }
-    if(page == MOTO_UI_PAGE_MESSAGES && ui.notification_total == 0) {
-        page = MOTO_UI_PAGE_NAVIGATION;
-    }
     const bool changed = page != ui.page;
     ui.page = page;
     for(int i = 0; i < MOTO_UI_PAGE_COUNT; ++i) {
@@ -509,21 +587,59 @@ void show_page(moto_ui_page_t page, bool reveal_on_same_page = false) {
             lv_obj_add_flag(ui.pages[i], LV_OBJ_FLAG_HIDDEN);
         }
     }
+    // The log has no data of its own arriving: it only changes when a
+    // notification lands, so the rows are (re)built whenever the page becomes
+    // visible rather than waiting for a snapshot update.
+    if(page == MOTO_UI_PAGE_MESSAGES) refresh_history_page();
     update_page_dots();
     // Navigation state arrives continuously. Only a real page transition or
     // user action may restart the five-second affordance timer.
     if(changed || reveal_on_same_page) reveal_page_dots();
 }
 
-void gesture_event(lv_event_t *) {
+/// Swipe detection from raw press/release points.
+///
+/// LVGL's gesture recogniser is compiled out (it forces LV_USE_FLOAT, which
+/// breaks the integer map geometry), so the direction is derived here: a drag
+/// that covers enough horizontal distance and ends with the finger still
+/// moving sideways counts as a page swipe. Vertical drags are left alone so
+/// the Messages list can scroll.
+void swipe_event(lv_event_t *event) {
     lv_indev_t *indev = lv_indev_active();
     if(indev == nullptr) return;
-    const lv_dir_t direction = lv_indev_get_gesture_dir(indev);
-    if(direction != LV_DIR_LEFT && direction != LV_DIR_RIGHT) return;
-    const int step = direction == LV_DIR_LEFT ? 1 : MOTO_UI_PAGE_COUNT - 1;
+    const lv_event_code_t code = lv_event_get_code(event);
+
+    static lv_point_t start{};
+    static lv_point_t last{};
+    static bool tracking = false;
+
+    lv_point_t point{};
+    lv_indev_get_point(indev, &point);
+
+    if(code == LV_EVENT_PRESSED) {
+        start = point;
+        last = point;
+        tracking = true;
+        return;
+    }
+    if(!tracking) return;
+    if(code == LV_EVENT_PRESSING) {
+        last = point;
+        return;
+    }
+    if(code != LV_EVENT_RELEASED && code != LV_EVENT_PRESS_LOST) return;
+
+    tracking = false;
+    const int dx = point.x - start.x;
+    const int dy = point.y - start.y;
+    // Both thresholds are in real pixels: 18% of the width is a deliberate
+    // swipe on a 480 px panel, and the horizontal travel must clearly beat the
+    // vertical one so a diagonal scroll is not read as a page change.
+    const int threshold = MOTO_UI_CANVAS_WIDTH / 5;
+    if(std::abs(dx) < threshold || std::abs(dx) <= std::abs(dy)) return;
+
+    const int step = dx < 0 ? 1 : MOTO_UI_PAGE_COUNT - 1;
     int next = (static_cast<int>(ui.page) + step) % MOTO_UI_PAGE_COUNT;
-    // Step over temporary pages (for example Music without a media session)
-    // and land on the first available page in the swiped direction.
     for(int hop = 0; hop < MOTO_UI_PAGE_COUNT && !page_available(next); ++hop) {
         next = (next + step) % MOTO_UI_PAGE_COUNT;
     }
@@ -534,7 +650,6 @@ void gesture_event(lv_event_t *) {
         show_page(requested, true);
     }
     reveal_page_dots();
-    lv_indev_wait_release(indev);
 }
 
 void draw_map_line(lv_layer_t *layer, const lv_draw_line_dsc_t &line) {
@@ -2049,6 +2164,107 @@ void create_compass_page() {
     lv_obj_align(ui.compass_speed, LV_ALIGN_CENTER, 0, px(57));
 }
 
+/// Points one hand at `angle_deg` clockwise from twelve o'clock.
+///
+/// The hands are drawn from the dial centre outwards. `length` and the widths
+/// are design-space values, converted through px() together with the centre so
+/// the hands keep their proportions on any panel size.
+/// Angle the hand should show `elapsed_ms` after `from_angle` became the target.
+///
+/// Driven by elapsed time rather than by a per-frame factor: the render rate is
+/// not fixed (the bridge renders on demand), so a frame-counted ease would land
+/// on a different angle each run and break the render tests' determinism. With
+/// time as the input, the same timestamp always yields the same angle.
+///
+/// The move is a smoothstep over kSweepMs; at the end the hand sits exactly on
+/// the target, and the shortest-arc wrap keeps 355 -> 5 deg from spinning the
+/// long way round.
+constexpr double kSweepMs = 420.0;
+
+double sweep_angle(double from_angle, double target, double elapsed_ms) {
+    if(from_angle < 0.0) return target;  // first placement: no sweep-in
+    const double delta = std::fmod(target - from_angle + 540.0, 360.0) - 180.0;
+    double t = elapsed_ms / kSweepMs;
+    if(t >= 1.0) return target;
+    if(t <= 0.0) return from_angle;
+    // Smoothstep: zero velocity at both ends, so the start and stop read as
+    // deliberate rather than as a snap.
+    const double eased = t * t * (3.0 - 2.0 * t);
+    return from_angle + delta * eased;
+}
+
+/// Points one hand at `angle_deg` clockwise from twelve o'clock.
+///
+/// The hands are drawn from the dial centre outwards. `length` and the widths
+/// are design-space values, converted through px() together with the centre so
+/// the hands keep their proportions on any panel size.
+void aim_clock_hand(lv_obj_t *hand, lv_point_precise_t points[2],
+                    double angle_deg, double length) {
+    if(hand == nullptr) return;
+    const double centre = px(180.0);
+    const double radians = angle_deg * kPi / 180.0;
+    points[0] = {
+        static_cast<lv_value_precise_t>(centre),
+        static_cast<lv_value_precise_t>(centre),
+    };
+    points[1] = {
+        static_cast<lv_value_precise_t>(centre + std::sin(radians) * px(length)),
+        static_cast<lv_value_precise_t>(centre - std::cos(radians) * px(length)),
+    };
+    // The points array is mutable and already registered, so only invalidate.
+    lv_obj_invalidate(hand);
+}
+
+/// Moves the three hands to the current time. Cheap: no layout, no text.
+void update_clock_hands() {
+    if(ui.clock.minutes == MOTO_UI_CLOCK_UNKNOWN ||
+       ui.clock.minutes >= 24U * 60U) {
+        // No trustworthy time: park every hand at twelve rather than showing a
+        // confident-looking wrong hour.
+        aim_clock_hand(ui.clock_hand_hour, ui.clock_hand_hour_points,
+                   ui.clock_hand_hour_shown, 78.0);
+    aim_clock_hand(ui.clock_hand_minute, ui.clock_hand_minute_points,
+                   ui.clock_hand_minute_shown, 112.0);
+    aim_clock_hand(ui.clock_hand_second, ui.clock_hand_second_points,
+                   ui.clock_hand_second_shown, 126.0);
+        return;
+    }
+    const unsigned hour24 = ui.clock.minutes / 60U;
+    const unsigned minute = ui.clock.minutes % 60U;
+    const unsigned second = ui.clock.second % 60U;
+    // The hour hand creeps forward with the minutes, the way a real watch does,
+    // instead of jumping a whole hour at the top of the hour.
+    const double hour_angle =
+        (hour24 % 12U) * 30.0 + minute * 0.5 + second * (0.5 / 60.0);
+    const double minute_angle = minute * 6.0 + second * 0.1;
+    const double second_angle = second * 6.0;
+
+    // Start a new sweep only when the target angle actually moved; a redraw
+    // for any other reason (a page change, a repaint) must not restart it.
+    const bool retarget = ui.clock_hand_second_shown < 0.0 ||
+                          std::abs(ui.clock_hand_second_shown - second_angle) > 0.01;
+    if(retarget) {
+        ui.clock_hand_hour_from = ui.clock_hand_hour_shown;
+        ui.clock_hand_minute_from = ui.clock_hand_minute_shown;
+        ui.clock_hand_second_from = ui.clock_hand_second_shown;
+        ui.clock_sweep_start_ms = lv_tick_get();
+    }
+    const double elapsed = static_cast<double>(lv_tick_get() - ui.clock_sweep_start_ms);
+    ui.clock_hand_hour_shown =
+        sweep_angle(ui.clock_hand_hour_from, hour_angle, elapsed);
+    ui.clock_hand_minute_shown =
+        sweep_angle(ui.clock_hand_minute_from, minute_angle, elapsed);
+    ui.clock_hand_second_shown =
+        sweep_angle(ui.clock_hand_second_from, second_angle, elapsed);
+
+    aim_clock_hand(ui.clock_hand_hour, ui.clock_hand_hour_points,
+                   ui.clock_hand_hour_shown, 78.0);
+    aim_clock_hand(ui.clock_hand_minute, ui.clock_hand_minute_points,
+                   ui.clock_hand_minute_shown, 112.0);
+    aim_clock_hand(ui.clock_hand_second, ui.clock_hand_second_points,
+                   ui.clock_hand_second_shown, 126.0);
+}
+
 void update_clock_view() {
     if(ui.clock_time == nullptr) return;
     if(ui.clock.minutes == MOTO_UI_CLOCK_UNKNOWN ||
@@ -2085,6 +2301,7 @@ void update_clock_view() {
         std::snprintf(date, sizeof(date), "%s", weekdays[ui.clock.weekday]);
     }
     lv_label_set_text(ui.clock_date, date);
+    update_clock_hands();
 }
 
 void create_clock_page() {
@@ -2120,6 +2337,34 @@ void create_clock_page() {
                                     major ? kSoft : kGraphite, 0);
     }
 
+    // Hands first, text after: LVGL draws children in creation order, so this
+    // puts the readout above the hands without relying on move_foreground.
+    // Lines rather than images, so the geometry scales with the design width
+    // and no asset has to be versioned. Lengths follow a watch: hour shortest,
+    // minute longer, second longest and thinnest.
+    struct HandSpec {
+        lv_obj_t **hand;
+        lv_point_precise_t *points;
+        double length;
+        int width;
+        lv_color_t color;
+    };
+    const HandSpec hands[3] = {
+        {&ui.clock_hand_hour, ui.clock_hand_hour_points, 78.0, 7, kWhite},
+        {&ui.clock_hand_minute, ui.clock_hand_minute_points, 112.0, 5, kWhite},
+        {&ui.clock_hand_second, ui.clock_hand_second_points, 126.0, 2, kIce},
+    };
+    for(const HandSpec &spec : hands) {
+        *spec.hand = lv_line_create(page);
+        lv_obj_set_size(*spec.hand, MOTO_UI_CANVAS_WIDTH,
+                        MOTO_UI_CANVAS_HEIGHT);
+        lv_obj_set_style_line_rounded(*spec.hand, true, 0);
+        lv_obj_set_style_line_width(*spec.hand, px(spec.width), 0);
+        lv_obj_set_style_line_color(*spec.hand, spec.color, 0);
+        lv_line_set_points_mutable(*spec.hand, spec.points, 2);
+        lv_obj_clear_flag(*spec.hand, LV_OBJ_FLAG_CLICKABLE);
+    }
+
     ui.clock_time = make_label(page, &moto_font_clock_96, kWhite, "--:--");
     lv_obj_align(ui.clock_time, LV_ALIGN_CENTER, 0, px(-12));
     ui.clock_date = make_label(page, &lv_font_montserrat_20, kQuiet, "");
@@ -2129,6 +2374,35 @@ void create_clock_page() {
                                    "LOCAL TIME");
     lv_obj_set_style_text_letter_space(caption, px(2), 0);
     lv_obj_align(caption, LV_ALIGN_BOTTOM_MID, 0, px(-49));
+
+    // The readout is the primary information on this page, so it sits above
+    // the hands. Order alone is not enough: a label's background is transparent
+    // by default, which let the hands show through the gaps between digits and
+    // read as if they were drawn on top. An opaque backing plate makes the
+    // layering real.
+    const auto make_plate = [](lv_obj_t *label, int pad_h, int pad_v) {
+        if(label == nullptr) return;
+        lv_obj_set_style_bg_color(label, kBlack, 0);
+        lv_obj_set_style_bg_opa(label, LV_OPA_COVER, 0);
+        lv_obj_set_style_radius(label, px(6), 0);
+        lv_obj_set_style_pad_hor(label, px(pad_h), 0);
+        lv_obj_set_style_pad_ver(label, px(pad_v), 0);
+    };
+    make_plate(ui.clock_time, 6, 2);
+    make_plate(ui.clock_date, 10, 4);
+    // The dial title and the caption sit where the hands reach, so they need a
+    // plate too: the second hand was slicing through "CLOCK".
+    // The title plate needs real vertical padding: the second hand runs from
+    // the centre out past y = 48 and would otherwise show through above and
+    // below the words.
+    make_plate(title, 14, 5);
+    make_plate(caption, 14, 5);
+    // Raised in ascending importance so the big readout ends up topmost.
+    lv_obj_move_foreground(title);
+    lv_obj_move_foreground(caption);
+    lv_obj_move_foreground(ui.clock_date);
+    lv_obj_move_foreground(ui.clock_time);
+
     update_clock_view();
 }
 
@@ -2236,7 +2510,7 @@ void create_trip_page() {
 
 /// Copies one notification into the history ring, newest at the head.
 void push_notification_history(const char *app, const char *title,
-                               const char *message) {
+                               const char *message, uint16_t local_minutes) {
     const int slot = ui.notification_head;
     copy_text(ui.notification_history[slot].app,
               sizeof(ui.notification_history[slot].app), app, "");
@@ -2244,6 +2518,7 @@ void push_notification_history(const char *app, const char *title,
               sizeof(ui.notification_history[slot].title), title, "");
     copy_text(ui.notification_history[slot].message,
               sizeof(ui.notification_history[slot].message), message, "");
+    ui.notification_history[slot].local_minutes = local_minutes;
     ui.notification_head = (slot + 1) % kNotificationHistorySize;
     if(ui.notification_total < kNotificationHistorySize) ++ui.notification_total;
 }
@@ -2252,8 +2527,10 @@ void refresh_history_page() {
     if(ui.history_rows[0] == nullptr) return;
     for(int i = 0; i < kNotificationHistorySize; ++i) {
         if(ui.history_rows[i] == nullptr) continue;
+        lv_obj_t *body = ui.history_bodies[i];
         if(i >= ui.notification_total) {
             lv_obj_add_flag(ui.history_rows[i], LV_OBJ_FLAG_HIDDEN);
+            if(body != nullptr) lv_obj_add_flag(body, LV_OBJ_FLAG_HIDDEN);
             continue;
         }
         // Walk backwards from the head so row 0 is always the newest.
@@ -2261,12 +2538,44 @@ void refresh_history_page() {
             (ui.notification_head - 1 - i + kNotificationHistorySize * 2) %
             kNotificationHistorySize;
         const auto &entry = ui.notification_history[index];
-        const char *headline =
-            entry.title[0] != '\0' ? entry.title
-                                    : (entry.message[0] != '\0' ? entry.message
-                                                                 : "(no text)");
-        lv_label_set_text(ui.history_rows[i], headline);
+
+        // Line 1: "12:34  微信". The time is what tells a rider how stale the
+        // entry is; the app name says where it came from.
+        char heading[64];
+        if(entry.local_minutes != MOTO_UI_CLOCK_UNKNOWN &&
+           entry.local_minutes < 24U * 60U) {
+            const char *app = entry.app[0] != '\0' ? entry.app : "通知";
+            lv_snprintf(heading, sizeof(heading), "%02u:%02u  %s",
+                        static_cast<unsigned>(entry.local_minutes / 60U),
+                        static_cast<unsigned>(entry.local_minutes % 60U), app);
+        } else {
+            lv_snprintf(heading, sizeof(heading), "%s",
+                        entry.app[0] != '\0' ? entry.app : "通知");
+        }
+        lv_label_set_text(ui.history_rows[i], heading);
         lv_obj_remove_flag(ui.history_rows[i], LV_OBJ_FLAG_HIDDEN);
+
+        // Line 2: title, then the body if it says something new. A short
+        // notification often repeats the title in the body.
+        if(body == nullptr) continue;
+        char text[192];
+        const bool has_title = entry.title[0] != '\0';
+        const bool has_body = entry.message[0] != '\0';
+        if(has_title && has_body && std::strcmp(entry.title, entry.message) != 0) {
+            lv_snprintf(text, sizeof(text), "%s：%s", entry.title,
+                        entry.message);
+        } else if(has_title) {
+            lv_snprintf(text, sizeof(text), "%s", entry.title);
+        } else if(has_body) {
+            lv_snprintf(text, sizeof(text), "%s", entry.message);
+        } else {
+            lv_snprintf(text, sizeof(text), "(无内容)");
+        }
+        lv_label_set_text(body, text);
+        lv_obj_remove_flag(body, LV_OBJ_FLAG_HIDDEN);
+        // Let the column recompute its scroll extent after the text changes,
+        // otherwise a long body would be clipped until the next layout pass.
+        lv_obj_update_layout(body);
     }
     if(ui.history_empty != nullptr) {
         if(ui.notification_total == 0) {
@@ -2277,33 +2586,88 @@ void refresh_history_page() {
     }
 }
 
-/// Message log: one full-width row per notification, newest first.
-///
-/// The card that appears over the ride is transient by design; this page is
-/// where a rider catches up on what they missed without unlocking the phone.
+void history_back_event(lv_event_t *) {
+    // Leaving explicitly also clears the hold, so the phone's snapshot can
+    // drive the page again.
+    if(ui.page_callback != nullptr) {
+        ui.page_callback(MOTO_UI_PAGE_NAVIGATION, ui.page_callback_context);
+    } else {
+        ui.user_selected_page = false;
+        show_page(MOTO_UI_PAGE_NAVIGATION, true);
+    }
+}
+
 void create_messages_page() {
     lv_obj_t *page = ui.pages[MOTO_UI_PAGE_MESSAGES];
     lv_obj_t *title =
         make_label(page, &lv_font_montserrat_16, kQuiet, "MESSAGES");
     lv_obj_set_style_text_letter_space(title, px(4), 0);
-    lv_obj_align(title, LV_ALIGN_TOP_MID, 0, px(46));
+    lv_obj_align(title, LV_ALIGN_TOP_MID, 0, px(34));
 
     ui.history_empty = make_label(page, &moto_font_notify_20, kQuiet,
                                   "NO MESSAGES YET");
     lv_obj_center(ui.history_empty);
 
-    const int row_top = 78;
-    const int row_step = 46;
+    // A visible way out. The scroll container covers most of this page, and a
+    // gesture that lands on it must not be the only route back.
+    ui.history_back = make_label(page, &lv_font_montserrat_16, kQuiet,
+                                 "TAP TO RETURN");
+    lv_obj_set_style_text_letter_space(ui.history_back, px(2), 0);
+    lv_obj_align(ui.history_back, LV_ALIGN_BOTTOM_MID, 0, -px(30));
+    lv_obj_add_flag(ui.history_back, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_add_event_cb(ui.history_back, history_back_event,
+                        LV_EVENT_PRESSED, nullptr);
+
+    // A scrolling column rather than a fixed list: a message can be long, and
+    // the entries are read by swiping, not by fitting everything at once.
+    // The container is inset from the panel edges so the round bezel never
+    // clips a line, and its scroll is vertical only so it cannot steal the
+    // horizontal page swipe.
+    lv_obj_t *column = lv_obj_create(page);
+    lv_obj_remove_style_all(column);
+    lv_obj_set_size(column, px(330), px(330));
+    lv_obj_align(column, LV_ALIGN_CENTER, 0, px(24));
+    lv_obj_set_style_bg_opa(column, LV_OPA_TRANSP, 0);
+    lv_obj_set_style_pad_all(column, px(6), 0);
+    lv_obj_set_style_pad_row(column, px(10), 0);
+    lv_obj_set_flex_flow(column, LV_FLEX_FLOW_COLUMN);
+    lv_obj_set_scroll_dir(column, LV_DIR_VER);
+    lv_obj_set_scrollbar_mode(column, LV_SCROLLBAR_MODE_AUTO);
+    lv_obj_set_style_width(column, px(4), LV_PART_SCROLLBAR);
+    lv_obj_set_style_bg_color(column, kGraphite, LV_PART_SCROLLBAR);
+    lv_obj_set_style_bg_opa(column, LV_OPA_COVER, LV_PART_SCROLLBAR);
+    lv_obj_add_flag(column, LV_OBJ_FLAG_SCROLLABLE);
+    // The scroll container covers most of this page, so it decides what a drag
+    // means. It scrolls vertically and must never claim the horizontal swipe:
+    // the screen-level handler is what changes pages. Gesture bubbling lets the
+    // unclaimed gesture reach it, and EVENT_BUBBLE keeps a tap on a card from
+    // being swallowed here instead of reaching the explicit return control.
+    lv_obj_add_flag(column, LV_OBJ_FLAG_GESTURE_BUBBLE);
+    lv_obj_add_flag(column, LV_OBJ_FLAG_EVENT_BUBBLE);
+
     for(int i = 0; i < kNotificationHistorySize; ++i) {
-        lv_obj_t *row = make_label(page, &moto_font_notify_20, kWhite, "");
-        // At the top and bottom of a round panel the chord is narrow, so the
-        // rows stay well inside the bezel instead of using the full width.
-        lv_obj_set_width(row, px(300));
-        lv_obj_set_style_text_align(row, LV_TEXT_ALIGN_LEFT, 0);
-        lv_label_set_long_mode(row, LV_LABEL_LONG_DOT);
-        lv_obj_align(row, LV_ALIGN_TOP_MID, 0, px(row_top + i * row_step));
-        lv_obj_add_flag(row, LV_OBJ_FLAG_HIDDEN);
-        ui.history_rows[i] = row;
+        // One card per entry: dim heading line and the message under it.
+        lv_obj_t *card = lv_obj_create(column);
+        lv_obj_remove_style_all(card);
+        lv_obj_set_width(card, lv_pct(100));
+        lv_obj_set_height(card, LV_SIZE_CONTENT);
+        lv_obj_set_flex_flow(card, LV_FLEX_FLOW_COLUMN);
+        lv_obj_set_style_pad_row(card, px(3), 0);
+
+        lv_obj_t *heading = make_label(card, &moto_font_notify_16, kQuiet, "");
+        lv_obj_set_width(heading, lv_pct(100));
+        lv_obj_set_style_text_align(heading, LV_TEXT_ALIGN_LEFT, 0);
+        lv_label_set_long_mode(heading, LV_LABEL_LONG_DOT);
+        lv_obj_add_flag(heading, LV_OBJ_FLAG_HIDDEN);
+        ui.history_rows[i] = heading;
+
+        lv_obj_t *body = make_label(card, &moto_font_notify_28, kWhite, "");
+        lv_obj_set_width(body, lv_pct(100));
+        // Wrap, not truncate: the whole point of the page is reading the text.
+        lv_label_set_long_mode(body, LV_LABEL_LONG_WRAP);
+        lv_obj_set_style_text_align(body, LV_TEXT_ALIGN_LEFT, 0);
+        lv_obj_add_flag(body, LV_OBJ_FLAG_HIDDEN);
+        ui.history_bodies[i] = body;
     }
     refresh_history_page();
 }
@@ -2522,10 +2886,18 @@ extern "C" void moto_nav_ui_create(void) {
     lv_obj_remove_flag(ui.screen, LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_set_style_bg_color(ui.screen, kBlack, 0);
     lv_obj_set_style_bg_opa(ui.screen, LV_OPA_COVER, 0);
-    lv_obj_add_event_cb(ui.screen, gesture_event, LV_EVENT_GESTURE, nullptr);
+    // Press/release travel instead of LV_EVENT_GESTURE: see swipe_event.
+    lv_obj_add_event_cb(ui.screen, swipe_event, LV_EVENT_PRESSED, nullptr);
+    lv_obj_add_event_cb(ui.screen, swipe_event, LV_EVENT_PRESSING, nullptr);
+    lv_obj_add_event_cb(ui.screen, swipe_event, LV_EVENT_RELEASED, nullptr);
+    lv_obj_add_event_cb(ui.screen, swipe_event, LV_EVENT_PRESS_LOST, nullptr);
     for(int i = 0; i < MOTO_UI_PAGE_COUNT; ++i) {
         ui.pages[i] = make_layer(ui.screen);
+        // Both flags: swipe detection listens for press/release on the screen,
+        // so a touch that lands on a child of a page has to bubble up or the
+        // whole gesture is swallowed by whichever widget was hit.
         lv_obj_add_flag(ui.pages[i], LV_OBJ_FLAG_GESTURE_BUBBLE);
+        lv_obj_add_flag(ui.pages[i], LV_OBJ_FLAG_EVENT_BUBBLE);
     }
     create_navigation_page();
     create_speed_page();
@@ -2557,7 +2929,18 @@ extern "C" void moto_nav_ui_create(void) {
 
 extern "C" void moto_nav_ui_set_state(const moto_ui_state_t *state) {
     if(state == nullptr || ui.screen == nullptr) return;
-    show_page(state->page);
+    // The Messages page is local to the panel and has no counterpart in the
+    // snapshot the phone drives. Navigation updates arrive several times per
+    // second, so without this the rider would be pulled off the page on the
+    // next update; any touch on another page clears the hold.
+    if(!ui.user_selected_page) {
+        show_page(state->page);
+    } else if(state->page != ui.page) {
+        // DIAG: the snapshot is asking for a different page while the rider
+        // holds one. If this fires during navigation, the hold is working and
+        // something else is repainting.
+        lv_log("HOLD page=%d want=%d\n", (int)ui.page, (int)state->page);
+    }
     // Hidden pages do not need to be invalidated. Page changes immediately
     // apply a fresh snapshot through PhoneNavBridge, so this keeps every page
     // correct while avoiding three full page redraws per navigation update.
@@ -2628,7 +3011,18 @@ extern "C" void moto_nav_ui_set_reduce_motion(uint8_t reduce_motion) {
 }
 
 extern "C" void moto_nav_ui_set_page(moto_ui_page_t page) {
-    if(ui.screen != nullptr) show_page(page, true);
+    if(ui.screen == nullptr) return;
+    // The hold is owned by the gesture handler, not by this API: programmatic
+    // page changes (a demo, a test, the phone asking for a page) must keep
+    // working exactly as before.
+    show_page(page, true);
+}
+
+/// Called by the gesture handler when the rider swipes to another page.
+extern "C" void moto_nav_ui_hold_selected_page(moto_ui_page_t page) {
+    if(ui.screen == nullptr) return;
+    ui.user_selected_page = page != MOTO_UI_PAGE_NAVIGATION;
+    show_page(page, true);
 }
 
 extern "C" moto_ui_page_t moto_nav_ui_get_page(void) {
@@ -2688,9 +3082,18 @@ extern "C" void moto_nav_ui_show_notification(
     lv_label_set_text(ui.notification_title, title);
     lv_label_set_text(ui.notification_message, message);
 
+    const bool first_message = ui.notification_total == 0;
     push_notification_history(
-        notification->app != nullptr ? notification->app : "", title, message);
+        notification->app != nullptr ? notification->app : "", title, message,
+        notification->local_minutes);
     if(ui.page == MOTO_UI_PAGE_MESSAGES) refresh_history_page();
+    // The Messages page only becomes a swipe target once something has been
+    // recorded, so the first card has to reveal its dot or the rider never
+    // learns the page exists.
+    if(first_message) {
+        update_page_dots();
+        reveal_page_dots();
+    }
     if(ui.notification_unread < 99) ++ui.notification_unread;
     if(ui.notification_unread > 1) {
         char badge[16] = {};
@@ -2731,6 +3134,23 @@ extern "C" void moto_nav_ui_set_link_quality(uint8_t bars) {
 
 extern "C" void moto_nav_ui_set_music_state(const moto_music_state_t *state) {
     if(state == nullptr || ui.screen == nullptr) return;
+
+    // Compare before copying. The phone re-sends the media state on every
+    // playback tick, and rewriting three labels plus their text buffers that
+    // often invalidated the Music page for no visible change.
+    const bool same =
+        ui.music.connected == state->connected &&
+        ui.music.playing == state->playing &&
+        ui.music.like_available == state->like_available &&
+        ui.music.liked == state->liked &&
+        std::strcmp(ui.music_source_text,
+                    state->source_name != nullptr ? state->source_name : "") == 0 &&
+        std::strcmp(ui.music_title_text,
+                    state->track_title != nullptr ? state->track_title : "") == 0 &&
+        std::strcmp(ui.music_artist_text,
+                    state->artist_name != nullptr ? state->artist_name : "") == 0;
+    if(same) return;
+
     ui.music = *state;
     copy_text(ui.music_source_text, sizeof(ui.music_source_text),
               state->source_name, "PHONE MEDIA");
@@ -2746,8 +3166,15 @@ extern "C" void moto_nav_ui_set_music_state(const moto_music_state_t *state) {
 
 extern "C" void moto_nav_ui_set_music_page_enabled(uint8_t enabled) {
     if(ui.screen == nullptr) return;
-    ui.music_page_enabled = enabled != 0;
-    if(!ui.music_page_enabled && ui.page == MOTO_UI_PAGE_MUSIC) {
+    const bool wanted = enabled != 0;
+    // Media state arrives several times a second. Re-running the transition and
+    // the dot layout on every message kept kicking the rider off the Music page
+    // and repainting the dot row, which is what looked like a flicker.
+    if(wanted == ui.music_page_enabled) return;
+    ui.music_page_enabled = wanted;
+    if(!wanted && ui.page == MOTO_UI_PAGE_MUSIC) {
+        // Only leave Music when the session is really gone, and only if the
+        // rider is standing on it.
         show_page(MOTO_UI_PAGE_NAVIGATION, true);
     }
     update_page_dots();

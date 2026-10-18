@@ -241,6 +241,34 @@ void test_music_page_state_and_fallback() {
   CHECK(moto_nav_ui_get_page() != MOTO_UI_PAGE_MUSIC);
 }
 
+void test_clock_page_renders_time_then_placeholder() {
+  moto_nav_ui_set_page(MOTO_UI_PAGE_CLOCK);
+  CHECK(moto_nav_ui_get_page() == MOTO_UI_PAGE_CLOCK);
+
+  moto_ui_clock_t clock{};
+  clock.minutes = 8 * 60 + 5;
+  clock.weekday = 1;
+  clock.month = 6;
+  clock.day = 15;
+  moto_nav_ui_set_clock(&clock);
+  const Frame timed = capture();
+
+  // The same value must render identically (no accumulated residue).
+  moto_nav_ui_set_clock(&clock);
+  const Frame again = capture();
+  CHECK(timed.hash == again.hash);
+
+  // Losing the phone clears the page back to the placeholder rather than
+  // freezing the last time on screen.
+  moto_ui_clock_t unknown{};
+  unknown.minutes = MOTO_UI_CLOCK_UNKNOWN;
+  moto_nav_ui_set_clock(&unknown);
+  const Frame cleared = capture();
+  CHECK(cleared.hash != timed.hash);
+
+  moto_nav_ui_set_page(MOTO_UI_PAGE_NAVIGATION);
+}
+
 void test_phone_lifecycle_renders_deterministically() {
   // The connection lifecycle is a full-screen overlay for the empty
   // navigation page; cycle it there and require visually distinct terminal
@@ -413,6 +441,89 @@ void test_diagonal_map_pixels_are_independent_of_partial_buffer_height() {
   CHECK(draw_with_buffer(short_buffer) == tall_frame);
 }
 
+// The notification overlay has to cover the instrument page, keep only the
+// newest notification, and leave no residue behind once it is dismissed.
+void test_notification_overlay_covers_and_clears() {
+  moto_ui_state_t state = base_state();
+  moto_nav_ui_set_state(&state);
+  moto_nav_ui_set_page(MOTO_UI_PAGE_NAVIGATION);
+  const Frame page = capture();
+
+  moto_ui_notification_t notification{};
+  notification.category = "INCOMING CALL";
+  notification.app = "com.apple.mobilephone";
+  notification.title = "来电";
+  notification.message = "段誉";
+  notification.hold_ms = 20'000;
+  moto_nav_ui_show_notification(&notification);
+  const Frame shown = capture();
+  CHECK(shown.hash != page.hash);
+
+  // Dismissing restores the untouched page, so the overlay leaves no residue.
+  moto_nav_ui_dismiss_notification();
+  CHECK(capture().hash == page.hash);
+
+  // The same notification after a dismissal is bit-identical: the burst
+  // counter restarts, so no stale "N NEW" badge survives.
+  moto_nav_ui_show_notification(&notification);
+  CHECK(capture().hash == shown.hash);
+
+  // A second notification replaces the first, including the new-count badge.
+  moto_ui_notification_t second = notification;
+  second.category = "MAIL";
+  second.title = "航班值机";
+  second.message = "请尽快办理";
+  second.hold_ms = 8'000;
+  moto_nav_ui_show_notification(&second);
+  const Frame replaced = capture();
+  CHECK(replaced.hash != shown.hash);
+
+  moto_nav_ui_dismiss_notification();
+  const Frame dismissed = capture();
+  CHECK(dismissed.hash == page.hash);
+}
+
+// The trip page has to show real totals, keep an empty trip honest, and leave
+// no residue when the values change.
+void test_trip_page_renders_totals_then_empty() {
+  moto_nav_ui_set_page(MOTO_UI_PAGE_TRIP);
+  CHECK(moto_nav_ui_get_page() == MOTO_UI_PAGE_TRIP);
+
+  moto_ui_trip_t trip{};
+  trip.distance_m = 12'345;
+  trip.moving_time_s = 3'912;
+  trip.elevation_gain_m = 187;
+  trip.max_speed_deci_kph = 973;
+  trip.recording = 1;
+  trip.elevation_known = 1;
+  moto_nav_ui_set_trip(&trip);
+  const Frame riding = capture();
+
+  // The same totals must render identically (no accumulated residue).
+  moto_nav_ui_set_trip(&trip);
+  CHECK(capture().hash == riding.hash);
+
+  // An unknown climb is not the same picture as a known zero.
+  moto_ui_trip_t no_climb = trip;
+  no_climb.elevation_known = 0;
+  moto_nav_ui_set_trip(&no_climb);
+  const Frame no_climb_frame = capture();
+  CHECK(no_climb_frame.hash != riding.hash);
+
+  // No phone trip at all renders the empty placeholder rather than zeros.
+  moto_ui_trip_t empty{};
+  moto_nav_ui_set_trip(&empty);
+  const Frame empty_frame = capture();
+  CHECK(empty_frame.hash != riding.hash);
+  CHECK(empty_frame.hash != no_climb_frame.hash);
+
+  // The page must survive leaving and returning without residue.
+  moto_nav_ui_set_page(MOTO_UI_PAGE_NAVIGATION);
+  capture();
+  moto_nav_ui_set_page(MOTO_UI_PAGE_TRIP);
+  CHECK(capture().hash == empty_frame.hash);
+}
+
 }  // namespace
 
 int main(int argc, char **argv) {
@@ -435,6 +546,9 @@ int main(int argc, char **argv) {
   test_frames_are_deterministic();
   test_clearing_geometry_leaves_no_residue();
   test_music_page_state_and_fallback();
+  test_clock_page_renders_time_then_placeholder();
+  test_notification_overlay_covers_and_clears();
+  test_trip_page_renders_totals_then_empty();
   test_phone_lifecycle_renders_deterministically();
   test_demo_mode_visual_contract();
   test_capacity_payloads_render_stably();

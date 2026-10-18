@@ -41,6 +41,13 @@ constexpr int kEnvelopeScale = 1024;
 // and the amplifier are closed again once the cues stop.
 constexpr int kIdleCloseMs = 2000;
 constexpr std::size_t kQueueDepth = 4;
+// Audible even on a muted panel: the limit cue is how a rider learns the press
+// registered when the level is already at an extreme.
+constexpr int kVolumeLimitAudible = 70;
+
+// The previous level is restored after a forced cue, so the limit thud does
+// not leave the panel louder than the rider asked for.
+int s_volume_before_forced = -1;
 
 constexpr int kTableSize = 64;
 const std::int16_t kSine[kTableSize] = {
@@ -76,9 +83,10 @@ const Segment kCall[] = {{1400, 130}, {0, 80}, {1750, 130}, {0, 80}, {2200, 220}
 const Segment kVolumeUp[] = {{1200, 70}, {0, 40}, {1800, 110}};
 // Falling pair: unmistakably "quieter".
 const Segment kVolumeDown[] = {{1800, 70}, {0, 40}, {1200, 110}};
-// Two flat beeps: already at the end of the range, press was understood but
-// changed nothing. Silence here used to look like a dropped key press.
-const Segment kVolumeLimit[] = {{900, 90}, {0, 70}, {900, 90}};
+// One low thud: already at the end of the range. Deliberately different from
+// both the rising and the falling pair -- the old flat double beep at 900 Hz
+// sat between them and was easily mistaken for "one more step down".
+const Segment kVolumeLimit[] = {{320, 180}};
 
 QueueHandle_t s_queue = nullptr;
 esp_codec_dev_handle_t s_speaker = nullptr;
@@ -278,6 +286,16 @@ void play_voice(moto_voice_phrase_t phrase) {
   }
 }
 
+/// Puts the rider's level back after a forced-audible cue.
+void restore_volume() {
+  s_volume.store(s_volume_before_forced >= 0 ? s_volume_before_forced
+                                             : kVolumePercent);
+  s_volume_before_forced = -1;
+  if (s_speaker != nullptr && s_open) {
+    esp_codec_dev_set_out_vol(s_speaker, s_volume.load());
+  }
+}
+
 void audio_task(void*) {
   moto_audio_cue_t cue = {};
   while (true) {
@@ -285,16 +303,25 @@ void audio_task(void*) {
       close_speaker();
       continue;
     }
+    // The "at the limit" thud is the one cue that must survive a muted panel:
+    // it is the only thing that tells the rider their press was understood,
+    // and by definition it fires when the level is at an extreme.
+    const bool forced = cue.tone == MOTO_TONE_VOLUME_LIMIT;
+    if (forced) {
+      s_volume_before_forced = s_volume.load();
+      s_volume.store(kVolumeLimitAudible);
+    }
     if (cue.voice != MOTO_VOICE_NONE) {
       play_voice(cue.voice);
+      if (forced) restore_volume();
       continue;
     }
     const Segment* segments = nullptr;
     std::size_t count = 0;
-    if (!pattern_for(cue.tone, &segments, &count) || !ensure_speaker_open()) {
-      continue;
+    if (pattern_for(cue.tone, &segments, &count) && ensure_speaker_open()) {
+      play_pattern(segments, count);
     }
-    play_pattern(segments, count);
+    if (forced) restore_volume();
   }
 }
 
