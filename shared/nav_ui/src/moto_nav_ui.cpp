@@ -15,6 +15,10 @@ LV_FONT_DECLARE(moto_font_nav_16);
 // level-1 Hanzi set. Instrument copy stays on Montserrat.
 LV_FONT_DECLARE(moto_font_notify_16);
 LV_FONT_DECLARE(moto_font_notify_20);
+// The full-screen notification card has its own, much larger sizes: it is read
+// at a glance at speed, not studied.
+LV_FONT_DECLARE(moto_font_notify_28);
+LV_FONT_DECLARE(moto_font_notify_34);
 
 namespace {
 
@@ -81,6 +85,14 @@ struct MapPolyline {
     const lv_point_precise_t *points = nullptr;
     std::uint16_t count = 0;
 };
+
+// Notification card geometry and the history ring. Declared before Ui because
+// the history entries are sized from these.
+constexpr int kNotificationTextWidth = 380;
+constexpr int kNotificationTitleHeight = 124;
+constexpr int kNotificationMessageHeight = 150;
+constexpr int kNotificationHistorySize = 8;
+constexpr int kNotificationTextCapacity = 96;
 
 struct Ui {
     lv_obj_t *screen = nullptr;
@@ -171,6 +183,18 @@ struct Ui {
     lv_obj_t *notification_hint = nullptr;
     lv_timer_t *notification_timer = nullptr;
     std::uint8_t notification_unread = 0;
+    // Ring of recent notifications, newest at notification_head.
+    struct HistoryEntry {
+        char app[kNotificationTextCapacity]{};
+        char title[kNotificationTextCapacity]{};
+        char message[kNotificationTextCapacity]{};
+    };
+    HistoryEntry notification_history[kNotificationHistorySize]{};
+    int notification_head = 0;
+    int notification_total = 0;
+    // History page rows: title line plus the app/time line under it.
+    lv_obj_t *history_rows[kNotificationHistorySize]{};
+    lv_obj_t *history_empty = nullptr;
     lv_timer_t *nav_success_timer = nullptr;
     moto_ui_phone_connection_t phone_connection = MOTO_UI_PHONE_OFFLINE;
     LifecycleVisual lifecycle_visual = LifecycleVisual::Hidden;
@@ -325,7 +349,11 @@ void draw_vehicle_marker(lv_event_t *event) {
 }
 
 bool page_available(int index) {
-    return index != MOTO_UI_PAGE_MUSIC || ui.music_page_enabled;
+    if(index == MOTO_UI_PAGE_MUSIC) return ui.music_page_enabled;
+    // An empty log is not worth a swipe target; the page appears once the
+    // first notification of the session has been recorded.
+    if(index == MOTO_UI_PAGE_MESSAGES) return ui.notification_total > 0;
+    return true;
 }
 
 void update_page_dots() {
@@ -344,6 +372,8 @@ void update_page_dots() {
     }
 }
 
+void refresh_history_page();
+
 void hide_page_dots(lv_timer_t *) {
     ui.page_dots_visible = false;
     update_page_dots();
@@ -361,9 +391,9 @@ void reveal_page_dots() {
     }
 }
 
-constexpr int kNotificationTextWidth = 300;
-constexpr int kNotificationTitleHeight = 58;
-constexpr int kNotificationMessageHeight = 66;
+// Recent notifications kept for the history page. Eight is what the round
+// screen can list legibly; older entries scroll out rather than being dropped
+// silently, which is what the counter on the page shows.
 constexpr std::uint32_t kNotificationHoldMs = 8'000;
 
 void hide_notification_overlay() {
@@ -401,42 +431,44 @@ void create_notification_overlay() {
     ui.notification_category =
         make_label(overlay, &lv_font_montserrat_16, kIce, "NOTIFICATION");
     lv_obj_set_style_text_letter_space(ui.notification_category, px(4), 0);
-    lv_obj_align(ui.notification_category, LV_ALIGN_TOP_MID, 0, px(74));
+    lv_obj_align(ui.notification_category, LV_ALIGN_TOP_MID, 0, px(58));
     ui.notification_badge = make_label(overlay, &lv_font_montserrat_16, kQuiet,
                                        "");
-    lv_obj_align(ui.notification_badge, LV_ALIGN_TOP_RIGHT, -px(58), px(74));
+    lv_obj_align(ui.notification_badge, LV_ALIGN_TOP_RIGHT, -px(52), px(58));
 
-    ui.notification_app = make_label(overlay, &moto_font_notify_16, kQuiet,
-                                     "");
+    ui.notification_app = make_label(overlay, &moto_font_notify_20, kQuiet, "");
     // Bundle identifiers can be long; keep the line inside the round bezel.
-    lv_obj_set_width(ui.notification_app, px(280));
-    lv_obj_set_height(ui.notification_app, px(22));
+    lv_obj_set_width(ui.notification_app, px(320));
+    lv_obj_set_height(ui.notification_app, px(32));
     lv_label_set_long_mode(ui.notification_app, LV_LABEL_LONG_DOT);
     lv_obj_set_style_text_align(ui.notification_app, LV_TEXT_ALIGN_CENTER, 0);
-    lv_obj_align(ui.notification_app, LV_ALIGN_TOP_MID, 0, px(102));
+    lv_obj_align(ui.notification_app, LV_ALIGN_TOP_MID, 0, px(88));
 
+    // Title and body carry the actual message, so they get the large sizes and
+    // wrap instead of truncating: a rider reads this in one glance, and an
+    // ellipsis would hide the part that matters.
     ui.notification_title =
-        make_label(overlay, &moto_font_notify_20, kWhite, "");
+        make_label(overlay, &moto_font_notify_34, kWhite, "");
     lv_obj_set_width(ui.notification_title, px(kNotificationTextWidth));
     lv_obj_set_height(ui.notification_title, px(kNotificationTitleHeight));
-    lv_label_set_long_mode(ui.notification_title, LV_LABEL_LONG_DOT);
+    lv_label_set_long_mode(ui.notification_title, LV_LABEL_LONG_WRAP);
     lv_obj_set_style_text_align(ui.notification_title, LV_TEXT_ALIGN_CENTER,
                                 0);
-    lv_obj_align(ui.notification_title, LV_ALIGN_CENTER, 0, px(-30));
+    lv_obj_align(ui.notification_title, LV_ALIGN_CENTER, 0, px(-58));
 
     ui.notification_message =
-        make_label(overlay, &moto_font_notify_16, kSoft, "");
+        make_label(overlay, &moto_font_notify_28, kSoft, "");
     lv_obj_set_width(ui.notification_message, px(kNotificationTextWidth));
     lv_obj_set_height(ui.notification_message, px(kNotificationMessageHeight));
-    lv_label_set_long_mode(ui.notification_message, LV_LABEL_LONG_DOT);
+    lv_label_set_long_mode(ui.notification_message, LV_LABEL_LONG_WRAP);
     lv_obj_set_style_text_align(ui.notification_message, LV_TEXT_ALIGN_CENTER,
                                 0);
-    lv_obj_align(ui.notification_message, LV_ALIGN_CENTER, 0, px(34));
+    lv_obj_align(ui.notification_message, LV_ALIGN_CENTER, 0, px(74));
 
     ui.notification_hint = make_label(overlay, &lv_font_montserrat_16, kQuiet,
                                       "TAP TO CLOSE");
     lv_obj_set_style_text_letter_space(ui.notification_hint, px(2), 0);
-    lv_obj_align(ui.notification_hint, LV_ALIGN_BOTTOM_MID, 0, -px(52));
+    lv_obj_align(ui.notification_hint, LV_ALIGN_BOTTOM_MID, 0, -px(40));
 
     ui.notification_timer =
         lv_timer_create(notification_timeout, kNotificationHoldMs, nullptr);
@@ -463,6 +495,9 @@ void install_interaction_wake(lv_obj_t *object) {
 void show_page(moto_ui_page_t page, bool reveal_on_same_page = false) {
     if(page < MOTO_UI_PAGE_NAVIGATION || page >= MOTO_UI_PAGE_COUNT) return;
     if(page == MOTO_UI_PAGE_MUSIC && !ui.music_page_enabled) {
+        page = MOTO_UI_PAGE_NAVIGATION;
+    }
+    if(page == MOTO_UI_PAGE_MESSAGES && ui.notification_total == 0) {
         page = MOTO_UI_PAGE_NAVIGATION;
     }
     const bool changed = page != ui.page;
@@ -1668,12 +1703,15 @@ void update_status_row() {
             lv_snprintf(text, sizeof(text), "--");
         }
         lv_label_set_text(ui.status_battery_text, text);
-        // The number lives inside the icon, so its colour has to follow what is
+        // The number sits inside the icon, so its colour has to follow what is
         // behind it: black once the white fill reaches the middle, white while
         // the pack is still mostly empty.
         const bool over_fill = known && ui.battery_percent >= 55;
         lv_obj_set_style_text_color(ui.status_battery_text,
                                     over_fill ? kBlack : kWhite, 0);
+        // Re-centre inside the icon. The label is a child of the battery body,
+        // so this centres on the pack itself and not on the whole page (which
+        // is what an earlier revision did, pushing the digits off the icon).
         lv_obj_center(ui.status_battery_text);
     }
     if(ui.status_battery_body != nullptr) {
@@ -1688,7 +1726,7 @@ void update_status_row() {
         }
     }
     if(ui.status_battery_fill != nullptr && known) {
-        const int inner = px(42);
+        const int inner = px(34);
         int width = inner * static_cast<int>(ui.battery_percent) / 100;
         if(ui.battery_percent > 0 && width < px(3)) width = px(3);
         lv_obj_set_width(ui.status_battery_fill, width);
@@ -1733,40 +1771,42 @@ void create_status_row() {
         ui.status_bars[i] = bar;
     }
 
+    // Compact pack: the previous 46x22 icon crowded the top edge of a round
+    // panel, where the usable width shrinks fastest.
     ui.status_battery_body = lv_obj_create(page);
     lv_obj_remove_style_all(ui.status_battery_body);
     lv_obj_clear_flag(ui.status_battery_body, LV_OBJ_FLAG_CLICKABLE);
-    lv_obj_set_size(ui.status_battery_body, px(46), px(22));
-    lv_obj_set_style_radius(ui.status_battery_body, px(5), 0);
+    lv_obj_set_size(ui.status_battery_body, px(38), px(17));
+    lv_obj_set_style_radius(ui.status_battery_body, px(4), 0);
     lv_obj_set_style_border_width(ui.status_battery_body, px(2), 0);
     lv_obj_set_style_border_color(ui.status_battery_body, kSoft, 0);
     lv_obj_set_style_bg_opa(ui.status_battery_body, LV_OPA_TRANSP, 0);
     lv_obj_set_style_pad_all(ui.status_battery_body, 0, 0);
-    lv_obj_align(ui.status_battery_body, LV_ALIGN_TOP_RIGHT, -px(24), px(19));
+    lv_obj_align(ui.status_battery_body, LV_ALIGN_TOP_RIGHT, -px(24), px(20));
 
     ui.status_battery_fill = lv_obj_create(ui.status_battery_body);
     lv_obj_remove_style_all(ui.status_battery_fill);
     lv_obj_clear_flag(ui.status_battery_fill, LV_OBJ_FLAG_CLICKABLE);
-    lv_obj_set_size(ui.status_battery_fill, px(42), px(18));
+    lv_obj_set_size(ui.status_battery_fill, px(34), px(13));
     lv_obj_set_pos(ui.status_battery_fill, 0, 0);
-    lv_obj_set_style_radius(ui.status_battery_fill, px(3), 0);
+    lv_obj_set_style_radius(ui.status_battery_fill, px(2), 0);
     lv_obj_set_style_bg_opa(ui.status_battery_fill, LV_OPA_COVER, 0);
     lv_obj_set_style_bg_color(ui.status_battery_fill, kWhite, 0);
 
     ui.status_battery_cap = lv_obj_create(page);
     lv_obj_remove_style_all(ui.status_battery_cap);
     lv_obj_clear_flag(ui.status_battery_cap, LV_OBJ_FLAG_CLICKABLE);
-    lv_obj_set_size(ui.status_battery_cap, px(4), px(10));
+    lv_obj_set_size(ui.status_battery_cap, px(3), px(7));
     lv_obj_set_style_radius(ui.status_battery_cap, px(2), 0);
     lv_obj_set_style_bg_opa(ui.status_battery_cap, LV_OPA_COVER, 0);
     lv_obj_set_style_bg_color(ui.status_battery_cap, kSoft, 0);
     lv_obj_align(ui.status_battery_cap, LV_ALIGN_TOP_RIGHT, -px(20), px(25));
 
+    // Child of the pack, so the digits are centred on the icon and move with it.
     ui.status_battery_text =
-        make_label(page, &lv_font_montserrat_14, kWhite, "--");
-    lv_obj_set_width(ui.status_battery_text, px(40));
+        make_label(ui.status_battery_body, &lv_font_montserrat_14, kWhite, "--");
     lv_obj_set_style_text_align(ui.status_battery_text, LV_TEXT_ALIGN_CENTER, 0);
-    lv_obj_align(ui.status_battery_text, LV_ALIGN_TOP_RIGHT, -px(27), px(22));
+    lv_obj_center(ui.status_battery_text);
 
     update_status_row();
 }
@@ -2194,6 +2234,80 @@ void create_trip_page() {
     update_trip_view();
 }
 
+/// Copies one notification into the history ring, newest at the head.
+void push_notification_history(const char *app, const char *title,
+                               const char *message) {
+    const int slot = ui.notification_head;
+    copy_text(ui.notification_history[slot].app,
+              sizeof(ui.notification_history[slot].app), app, "");
+    copy_text(ui.notification_history[slot].title,
+              sizeof(ui.notification_history[slot].title), title, "");
+    copy_text(ui.notification_history[slot].message,
+              sizeof(ui.notification_history[slot].message), message, "");
+    ui.notification_head = (slot + 1) % kNotificationHistorySize;
+    if(ui.notification_total < kNotificationHistorySize) ++ui.notification_total;
+}
+
+void refresh_history_page() {
+    if(ui.history_rows[0] == nullptr) return;
+    for(int i = 0; i < kNotificationHistorySize; ++i) {
+        if(ui.history_rows[i] == nullptr) continue;
+        if(i >= ui.notification_total) {
+            lv_obj_add_flag(ui.history_rows[i], LV_OBJ_FLAG_HIDDEN);
+            continue;
+        }
+        // Walk backwards from the head so row 0 is always the newest.
+        const int index =
+            (ui.notification_head - 1 - i + kNotificationHistorySize * 2) %
+            kNotificationHistorySize;
+        const auto &entry = ui.notification_history[index];
+        const char *headline =
+            entry.title[0] != '\0' ? entry.title
+                                    : (entry.message[0] != '\0' ? entry.message
+                                                                 : "(no text)");
+        lv_label_set_text(ui.history_rows[i], headline);
+        lv_obj_remove_flag(ui.history_rows[i], LV_OBJ_FLAG_HIDDEN);
+    }
+    if(ui.history_empty != nullptr) {
+        if(ui.notification_total == 0) {
+            lv_obj_remove_flag(ui.history_empty, LV_OBJ_FLAG_HIDDEN);
+        } else {
+            lv_obj_add_flag(ui.history_empty, LV_OBJ_FLAG_HIDDEN);
+        }
+    }
+}
+
+/// Message log: one full-width row per notification, newest first.
+///
+/// The card that appears over the ride is transient by design; this page is
+/// where a rider catches up on what they missed without unlocking the phone.
+void create_messages_page() {
+    lv_obj_t *page = ui.pages[MOTO_UI_PAGE_MESSAGES];
+    lv_obj_t *title =
+        make_label(page, &lv_font_montserrat_16, kQuiet, "MESSAGES");
+    lv_obj_set_style_text_letter_space(title, px(4), 0);
+    lv_obj_align(title, LV_ALIGN_TOP_MID, 0, px(46));
+
+    ui.history_empty = make_label(page, &moto_font_notify_20, kQuiet,
+                                  "NO MESSAGES YET");
+    lv_obj_center(ui.history_empty);
+
+    const int row_top = 78;
+    const int row_step = 46;
+    for(int i = 0; i < kNotificationHistorySize; ++i) {
+        lv_obj_t *row = make_label(page, &moto_font_notify_20, kWhite, "");
+        // At the top and bottom of a round panel the chord is narrow, so the
+        // rows stay well inside the bezel instead of using the full width.
+        lv_obj_set_width(row, px(300));
+        lv_obj_set_style_text_align(row, LV_TEXT_ALIGN_LEFT, 0);
+        lv_label_set_long_mode(row, LV_LABEL_LONG_DOT);
+        lv_obj_align(row, LV_ALIGN_TOP_MID, 0, px(row_top + i * row_step));
+        lv_obj_add_flag(row, LV_OBJ_FLAG_HIDDEN);
+        ui.history_rows[i] = row;
+    }
+    refresh_history_page();
+}
+
 void create_music_page() {
     lv_obj_t *page = ui.pages[MOTO_UI_PAGE_MUSIC];
     // Song titles and artist names are arbitrary user content, so these three
@@ -2419,6 +2533,7 @@ extern "C" void moto_nav_ui_create(void) {
     create_compass_page();
     create_clock_page();
     create_music_page();
+    create_messages_page();
     create_page_dots();
     create_notification_overlay();
     // Press events are delivered to the topmost object under the finger, not
@@ -2450,6 +2565,7 @@ extern "C" void moto_nav_ui_set_state(const moto_ui_state_t *state) {
         case MOTO_UI_PAGE_NAVIGATION: update_navigation(state); break;
         case MOTO_UI_PAGE_SPEED: update_speedometer(state); break;
         case MOTO_UI_PAGE_COMPASS: update_compass(state); break;
+        case MOTO_UI_PAGE_MESSAGES: refresh_history_page(); break;
         case MOTO_UI_PAGE_CLOCK:
         case MOTO_UI_PAGE_TRIP:
         case MOTO_UI_PAGE_MUSIC:
@@ -2572,6 +2688,9 @@ extern "C" void moto_nav_ui_show_notification(
     lv_label_set_text(ui.notification_title, title);
     lv_label_set_text(ui.notification_message, message);
 
+    push_notification_history(
+        notification->app != nullptr ? notification->app : "", title, message);
+    if(ui.page == MOTO_UI_PAGE_MESSAGES) refresh_history_page();
     if(ui.notification_unread < 99) ++ui.notification_unread;
     if(ui.notification_unread > 1) {
         char badge[16] = {};

@@ -168,16 +168,22 @@ void save_volume(std::uint8_t value) {
 }
 
 /// Applies and persists one new speaker level, with a cue as feedback.
-void apply_volume(std::uint8_t level, const char* source) {
+/// `direction` picks the cue; it is +1 for a louder press, -1 for quieter.
+/// A press that saturates still answers with the limit cue, because silence
+/// there is indistinguishable from a key that failed to register.
+void apply_volume(std::uint8_t level, int direction, const char* source) {
   if (level == g_volume) {
-    // Already at the end of the range; a cue would claim something changed.
+    ESP_LOGI(kTag, "volume stays %u%% (%s, at limit)",
+             static_cast<unsigned>(level), source);
+    board_port_play_tone(MOTO_TONE_VOLUME_LIMIT);
     return;
   }
   g_volume = level;
   board_port_set_volume(level);
   save_volume(level);
   ESP_LOGI(kTag, "volume -> %u%% (%s)", static_cast<unsigned>(level), source);
-  board_port_play_tone(MOTO_TONE_NOTIFICATION);
+  board_port_play_tone(direction > 0 ? MOTO_TONE_VOLUME_UP
+                                     : MOTO_TONE_VOLUME_DOWN);
 }
 
 
@@ -205,7 +211,7 @@ void boot_key_task(void*) {
       pressed = false;
       const std::uint64_t held_ms = now_ms - pressed_since_ms;
       if (held_ms >= kShortPressMinMs && held_ms < kPowerHoldMs) {
-        apply_volume(moto::audio::volume_down(g_volume), "BOOT key");
+        apply_volume(moto::audio::volume_down(g_volume), -1, "BOOT key");
       }
     }
     vTaskDelay(pdMS_TO_TICKS(20));
@@ -322,7 +328,7 @@ void power_button_task(void* context) {
         // a slider, and a four-step cycle is predictable without feedback
         // beyond one cue.
         if (held_ms >= kShortPressMinMs && held_ms < kPowerHoldMs) {
-          apply_volume(moto::audio::volume_up(g_volume), "user key");
+          apply_volume(moto::audio::volume_up(g_volume), +1, "user key");
         }
       }
       vTaskDelay(pdMS_TO_TICKS(20));

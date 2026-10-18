@@ -60,6 +60,9 @@ typedef enum {
     MOTO_UI_PAGE_COMPASS,
     MOTO_UI_PAGE_CLOCK,
     MOTO_UI_PAGE_MUSIC,
+    /* Recent notifications, newest first. Only reachable after a card has
+       arrived, so a rider never swipes onto an empty log. */
+    MOTO_UI_PAGE_MESSAGES,
     MOTO_UI_PAGE_COUNT,
 } moto_ui_page_t;
 

@@ -26,6 +26,11 @@ typedef enum {
     MOTO_TONE_SPEED_LIMIT,  /**< Low buzz: over the posted limit. */
     MOTO_TONE_NOTIFICATION, /**< One short ding. */
     MOTO_TONE_CALL,         /**< Ring pattern for an incoming call. */
+    /* Volume keys. Each direction has its own shape so the rider can hear
+       which way a press went without looking at the panel. */
+    MOTO_TONE_VOLUME_UP,    /**< Rising pair. */
+    MOTO_TONE_VOLUME_DOWN,  /**< Falling pair. */
+    MOTO_TONE_VOLUME_LIMIT, /**< Flat pair: already at the end of the range. */
 } moto_tone_t;
 
 /**

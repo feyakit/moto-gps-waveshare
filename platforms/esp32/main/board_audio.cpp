@@ -71,6 +71,14 @@ const Segment kArrive[] = {{1200, 110}, {0, 40}, {1600, 110}, {0, 40}, {2000, 16
 const Segment kSpeedLimit[] = {{440, 320}};
 const Segment kNotification[] = {{2000, 90}, {0, 40}, {2600, 130}};
 const Segment kCall[] = {{1400, 130}, {0, 80}, {1750, 130}, {0, 80}, {2200, 220}};
+// Rising pair: unmistakably "louder". The old shared ding could not tell the
+// rider which direction a press had gone, which read as keys that did nothing.
+const Segment kVolumeUp[] = {{1200, 70}, {0, 40}, {1800, 110}};
+// Falling pair: unmistakably "quieter".
+const Segment kVolumeDown[] = {{1800, 70}, {0, 40}, {1200, 110}};
+// Two flat beeps: already at the end of the range, press was understood but
+// changed nothing. Silence here used to look like a dropped key press.
+const Segment kVolumeLimit[] = {{900, 90}, {0, 70}, {900, 90}};
 
 QueueHandle_t s_queue = nullptr;
 esp_codec_dev_handle_t s_speaker = nullptr;
@@ -117,6 +125,18 @@ bool pattern_for(moto_tone_t tone, const Segment** segments,
         *segments = kCall;
         *count = sizeof(kCall) / sizeof(kCall[0]);
         return true;
+      case MOTO_TONE_VOLUME_UP:
+        *segments = kVolumeUp;
+        *count = sizeof(kVolumeUp) / sizeof(kVolumeUp[0]);
+        return true;
+      case MOTO_TONE_VOLUME_DOWN:
+        *segments = kVolumeDown;
+        *count = sizeof(kVolumeDown) / sizeof(kVolumeDown[0]);
+        return true;
+      case MOTO_TONE_VOLUME_LIMIT:
+        *segments = kVolumeLimit;
+        *count = sizeof(kVolumeLimit) / sizeof(kVolumeLimit[0]);
+        return true;
     default:
       return false;
   }
@@ -155,6 +175,10 @@ bool ensure_speaker_open() {
       ESP_LOGW(kTag, "could not open the speaker path");
       return false;
     }
+    // Reopening the path after the idle close resets the codec's gain, and
+    // s_speaker stays non-null across that cycle, so the level has to be
+    // applied here rather than only at first init.
+    esp_codec_dev_set_out_vol(s_speaker, s_volume.load());
     s_open = true;
   }
   return true;

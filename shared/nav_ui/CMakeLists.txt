@@ -13,6 +13,8 @@ add_library(moto_nav_ui STATIC
     assets/moto_font_nav_16.c
     assets/moto_font_notify_16.c
     assets/moto_font_notify_20.c
+    assets/moto_font_notify_28.c
+    assets/moto_font_notify_34.c
     src/moto_nav_ui.cpp
 )
 

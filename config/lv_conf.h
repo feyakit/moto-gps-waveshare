@@ -26,6 +26,9 @@
 #define LV_FONT_MONTSERRAT_28 1
 #define LV_FONT_MONTSERRAT_48 1
 #define LV_FONT_SOURCE_HAN_SANS_SC_16_CJK 0
+/* The notification card uses 28/34 px Hanzi fonts whose glyph index and
+   bitmap tables exceed the 16-bit default, so the large format is required. */
+#define LV_FONT_FMT_TXT_LARGE 1
 
 #define LV_USE_ARC 1
 #define LV_USE_LABEL 1

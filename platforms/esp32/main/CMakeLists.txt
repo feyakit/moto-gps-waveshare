@@ -7,7 +7,9 @@ set(MOTO_SHARED_UI_CLOCK_FONT
     "${MOTO_REPOSITORY_ROOT}/shared/nav_ui/assets/moto_font_clock_96.c")
 set(MOTO_SHARED_UI_NOTIFY_FONTS
     "${MOTO_REPOSITORY_ROOT}/shared/nav_ui/assets/moto_font_notify_16.c"
-    "${MOTO_REPOSITORY_ROOT}/shared/nav_ui/assets/moto_font_notify_20.c")
+    "${MOTO_REPOSITORY_ROOT}/shared/nav_ui/assets/moto_font_notify_20.c"
+    "${MOTO_REPOSITORY_ROOT}/shared/nav_ui/assets/moto_font_notify_28.c"
+    "${MOTO_REPOSITORY_ROOT}/shared/nav_ui/assets/moto_font_notify_34.c")
 set(MOTO_SHARED_UI_INCLUDE
     "${MOTO_REPOSITORY_ROOT}/shared/nav_ui/include")
 set(MOTO_SHARED_NAV_PRESENTER_SOURCE
