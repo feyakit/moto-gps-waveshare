@@ -729,9 +729,43 @@
     elements.dialogRuntime.textContent = `LVGL 已运行 · ${NAV_STATE[navState] ?? "未知"}`;
   }
 
+  // The browser console has no BLE peer, so it feeds the shared Clock page the
+  // host machine's local wall-clock. Re-push whenever the minute rolls over.
+  function pushClock(runtime) {
+    if (typeof runtime?.demoClock !== "function") return;
+    const now = new Date();
+    const weekday = now.getDay() === 0 ? 7 : now.getDay();
+    runtime.demoClock(
+      now.getHours() * 60 + now.getMinutes(),
+      weekday,
+      now.getMonth() + 1,
+      now.getDate(),
+    );
+  }
+
+  function startClock(runtime) {
+    let lastMinute = new Date().getMinutes();
+    window.setTimeout(() => pushClock(runtime), 0);
+    window.setInterval(() => {
+      const minute = new Date().getMinutes();
+      if (minute === lastMinute) return;
+      lastMinute = minute;
+      pushClock(runtime);
+    }, 1000);
+  }
+
+  // A browser tab has no GNSS ride of its own, so the Trip page shows one
+  // labelled sample instead of inventing numbers that look live.
+  function pushTrip(runtime) {
+    if (typeof runtime?.demoTrip !== "function") return;
+    runtime.demoTrip(23456, 3912, 187, 973);
+  }
+
   function attachRuntime(runtime) {
     state.runtime = runtime;
     state.runtimeReady = true;
+    startClock(runtime);
+    pushTrip(runtime);
     runtime.initialize();
     if (DEVICE_STATE_PREVIEW) {
       state.currentPosition = {

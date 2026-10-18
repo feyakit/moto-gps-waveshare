@@ -99,6 +99,8 @@ DisplayPage display_page_from_ui(moto_ui_page_t page) {
   switch(page) {
     case MOTO_UI_PAGE_SPEED: return DisplayPage::Speed;
     case MOTO_UI_PAGE_COMPASS: return DisplayPage::Compass;
+    case MOTO_UI_PAGE_CLOCK: return DisplayPage::Clock;
+    case MOTO_UI_PAGE_TRIP: return DisplayPage::Trip;
     case MOTO_UI_PAGE_MUSIC: return DisplayPage::Music;
     case MOTO_UI_PAGE_NAVIGATION:
     case MOTO_UI_PAGE_COUNT:
@@ -682,10 +684,49 @@ extern "C" EMSCRIPTEN_KEEPALIVE int moto_web_get_page(void) {
   switch(app.snapshot().display_page) {
     case DisplayPage::Speed: return MOTO_UI_PAGE_SPEED;
     case DisplayPage::Compass: return MOTO_UI_PAGE_COMPASS;
+    case DisplayPage::Clock: return MOTO_UI_PAGE_CLOCK;
+    case DisplayPage::Trip: return MOTO_UI_PAGE_TRIP;
     case DisplayPage::Music: return MOTO_UI_PAGE_MUSIC;
     case DisplayPage::Navigation: return MOTO_UI_PAGE_NAVIGATION;
   }
   return MOTO_UI_PAGE_NAVIGATION;
+}
+
+// The WEB console has no BLE peer, so the host page hands the browser's local
+// wall-clock straight to the shared Clock page. Unknown values are sent as
+// MOTO_UI_CLOCK_UNKNOWN so the page keeps showing its placeholder.
+extern "C" EMSCRIPTEN_KEEPALIVE void moto_web_set_clock(int minutes,
+                                                        int weekday,
+                                                        int month,
+                                                        int day) {
+  moto_ui_clock_t clock{};
+  clock.minutes = minutes < 0
+                      ? MOTO_UI_CLOCK_UNKNOWN
+                      : static_cast<std::uint16_t>(minutes);
+  clock.weekday = static_cast<std::uint8_t>(std::max(weekday, 0));
+  clock.month = static_cast<std::uint8_t>(std::max(month, 0));
+  clock.day = static_cast<std::uint8_t>(std::max(day, 0));
+  moto_nav_ui_set_clock(&clock);
+}
+
+// The WEB console has no GNSS ride to accumulate, so the host page supplies a
+// representative sample so the Trip page can be inspected in a plain browser.
+// Negative distance means "no trip" and parks the page on its empty state.
+extern "C" EMSCRIPTEN_KEEPALIVE void moto_web_set_trip(int distance_m,
+                                                       int moving_time_s,
+                                                       int elevation_gain_m,
+                                                       int max_speed_deci_kph) {
+  moto_ui_trip_t trip{};
+  if(distance_m >= 0 && moving_time_s >= 0 && max_speed_deci_kph >= 0) {
+    trip.distance_m = static_cast<std::uint32_t>(distance_m);
+    trip.moving_time_s = static_cast<std::uint32_t>(moving_time_s);
+    trip.elevation_gain_m =
+        static_cast<std::uint32_t>(std::max(elevation_gain_m, 0));
+    trip.max_speed_deci_kph = static_cast<std::uint16_t>(max_speed_deci_kph);
+    trip.recording = 1;
+    trip.elevation_known = 1;
+  }
+  moto_nav_ui_set_trip(&trip);
 }
 
 int main() {

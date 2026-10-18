@@ -48,6 +48,27 @@ enum BLEWritePumpPolicy {
     }
 }
 
+/// Quantized view of the ride totals. The Trip page renders distance at
+/// 100 m, moving time at 5 s and elevation at 1 m, so a finer update would
+/// only burn radio time on values the rider cannot see.
+struct TripSignature: Equatable {
+    let distanceBucket: UInt32
+    let movingTimeBucket: UInt32
+    let elevationBucket: UInt32
+    let maxSpeedDeciKph: UInt16
+    let isRecording: Bool
+    let elevationKnown: Bool
+
+    init(_ totals: TripTotals) {
+        distanceBucket = totals.distanceM / 100
+        movingTimeBucket = totals.movingTimeS / 5
+        elevationBucket = totals.elevationGainM
+        maxSpeedDeciKph = totals.maxSpeedDeciKph
+        isRecording = totals.isRecording
+        elevationKnown = totals.elevationKnown
+    }
+}
+
 /// Only elapsed time between app events may leave the phone. Keep the system
 /// uptime used for local watchdogs out of the BLE heartbeat payload.
 struct BLESessionHeartbeatClock {
@@ -227,6 +248,9 @@ final class ESP32BLECentral: NSObject {
     private var handshake: BLEHandshakeGate?
     private var pendingNavigationState: MotoNavCoreSnapshot?
     private var pendingMediaState: PhoneMediaState?
+    private var lastSentClockMinute: Int?
+    private var pendingTripTotals: TripTotals?
+    private var lastSentTripSignature: TripSignature?
     private var pendingMapScene: OfflineMapSceneWindow?
     private var mapSceneDelivery = BLEMapSceneDelivery()
     private var mapSceneFinalFrame: Data?
@@ -318,11 +342,43 @@ final class ESP32BLECentral: NSObject {
         flushPendingMediaState()
     }
 
+    /// Publishes the newest ride totals. The board owns no odometer, so these
+    /// are the only source for the Trip page and they survive an app relaunch
+    /// only as long as the phone process keeps them.
+    func updateTrip(_ totals: TripTotals) {
+        pendingTripTotals = totals
+        sendTripStateIfNeeded()
+    }
+
     /// Map scenes are sparse, low-frequency replacements.  Retain only the
     /// newest local window while disconnected or while a prior write drains.
     func sendMapScene(_ scene: OfflineMapSceneWindow) {
         pendingMapScene = scene
         flushPendingMapScene()
+    }
+
+    /// Pushes the ride totals to the Trip page. Totals move continuously, so
+    /// they are quantized to what the page can actually render and only sent
+    /// when that visible value changes.
+    private func sendTripStateIfNeeded() {
+        guard protocolReady, let codec, let totals = pendingTripTotals else { return }
+        let signature = TripSignature(totals)
+        if lastSentTripSignature == signature { return }
+
+        let input = MotoBLETripStateInput()
+        input.distanceM = totals.distanceM
+        input.movingTimeS = totals.movingTimeS
+        input.elevationGainM = totals.elevationGainM
+        input.maxSpeedDeciKph = totals.maxSpeedDeciKph
+        input.isRecording = totals.isRecording
+        input.elevationKnown = totals.elevationKnown
+
+        do {
+            try send(codec.encodeTripState(input))
+            lastSentTripSignature = signature
+        } catch {
+            recoverFromTransportError(error.localizedDescription)
+        }
     }
 
     private func startScan() {
@@ -579,6 +635,8 @@ final class ESP32BLECentral: NSObject {
                 }
                 flushPendingMediaState()
                 flushPendingMapScene()
+                sendClockStateIfNeeded()
+                sendTripStateIfNeeded()
             }
         } catch {
             recoverFromTransportError(error.localizedDescription)
@@ -664,6 +722,8 @@ final class ESP32BLECentral: NSObject {
         writePumpTask = nil
         lastNavigationTransmitAtMs = 0
         lastWriteWithoutResponseAtMs = 0
+        lastSentClockMinute = nil
+        lastSentTripSignature = nil
         lastRouteGeometrySignature = nil
         mapSceneDelivery = BLEMapSceneDelivery()
         mapSceneFinalFrame = nil
@@ -870,6 +930,35 @@ final class ESP32BLECentral: NSObject {
         }
     }
 
+    /// Pushes the phone's local wall-clock to the round display's Clock page.
+    /// Minute resolution is all the dial shows, so the 1 Hz heartbeat only
+    /// re-sends it when the minute or the session actually changed.
+    private func sendClockStateIfNeeded() {
+        guard protocolReady, let codec else { return }
+        let components = Calendar.current.dateComponents(
+            [.hour, .minute, .weekday, .month, .day],
+            from: Date()
+        )
+        guard let hour = components.hour, let minute = components.minute else { return }
+        let minutes = hour * 60 + minute
+        if lastSentClockMinute == minutes { return }
+
+        let input = MotoBLEClockStateInput()
+        input.minutes = UInt16(minutes)
+        // Foundation numbers weekdays 1 Sunday .. 7 Saturday; the wire uses
+        // ISO-8601 (1 Monday .. 7 Sunday).
+        input.weekday = UInt8(((components.weekday ?? 1) + 5) % 7 + 1)
+        input.month = UInt8(components.month ?? 0)
+        input.day = UInt8(components.day ?? 0)
+
+        do {
+            try send(codec.encodeClockState(input))
+            lastSentClockMinute = minutes
+        } catch {
+            recoverFromTransportError(error.localizedDescription)
+        }
+    }
+
     private func flushPendingMapScene() {
         guard protocolReady,
               peerCapabilities & Self.mapSceneCapability != 0,
@@ -1043,6 +1132,8 @@ final class ESP32BLECentral: NSObject {
                         )
                     )
                     self.flushPendingMapScene()
+                    self.sendClockStateIfNeeded()
+                    self.sendTripStateIfNeeded()
                 } catch {
                     self.recoverFromTransportError(error.localizedDescription)
                     return

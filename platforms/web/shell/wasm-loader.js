@@ -42,6 +42,8 @@
       getPage: module.cwrap("moto_web_get_page", "number", []),
       demoScenario: module.cwrap("moto_web_set_scenario", null, ["number"]),
       demoPage: module.cwrap("moto_web_set_page", null, ["number"]),
+      demoClock: module.cwrap("moto_web_set_clock", null, ["number", "number", "number", "number"]),
+      demoTrip: module.cwrap("moto_web_set_trip", null, ["number", "number", "number", "number"]),
       previewPhoneLifecycle: module.cwrap("moto_web_preview_phone_lifecycle", null, ["number"]),
       setPhoneConnection: module.cwrap("moto_web_set_phone_connection", null, ["number"]),
     });

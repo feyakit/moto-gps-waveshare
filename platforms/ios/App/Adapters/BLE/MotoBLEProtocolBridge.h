@@ -51,6 +51,28 @@ NS_ASSUME_NONNULL_BEGIN
 @property(nonatomic, copy) NSString *artistName;
 @end
 
+/// Phone-local wall-clock for the round display's Clock page. Minutes are
+/// counted from local midnight; `minutes` is `MOTO_UI_CLOCK_UNKNOWN` when the
+/// phone has no trustworthy local time. Weekday uses ISO-8601 numbering
+/// (1 Monday .. 7 Sunday); `month`/`day` are 0 when unknown.
+@interface MotoBLEClockStateInput : NSObject
+@property(nonatomic) uint16_t minutes;
+@property(nonatomic) uint8_t weekday;
+@property(nonatomic) uint8_t month;
+@property(nonatomic) uint8_t day;
+@end
+
+/// Cumulative ride totals for the round display's Trip page. The phone
+/// accumulates them from GNSS fixes; the board only displays.
+@interface MotoBLETripStateInput : NSObject
+@property(nonatomic) uint32_t distanceM;
+@property(nonatomic) uint32_t movingTimeS;
+@property(nonatomic) uint32_t elevationGainM;
+@property(nonatomic) uint16_t maxSpeedDeciKph;
+@property(nonatomic) BOOL isRecording;
+@property(nonatomic) BOOL elevationKnown;
+@end
+
 @interface MotoBLEMapPointInput : NSObject
 @property(nonatomic) int32_t latitudeE6;
 @property(nonatomic) int32_t longitudeE6;
@@ -162,6 +184,12 @@ NS_ASSUME_NONNULL_BEGIN
                                            error:(NSError **)error;
 
 - (nullable NSArray<NSData *> *)encodeMapScene:(MotoBLEMapSceneInput *)scene
+                                          error:(NSError **)error;
+
+- (nullable NSArray<NSData *> *)encodeClockState:(MotoBLEClockStateInput *)state
+                                           error:(NSError **)error;
+
+- (nullable NSArray<NSData *> *)encodeTripState:(MotoBLETripStateInput *)state
                                           error:(NSError **)error;
 
 /// Test hook for checking the shared MapScene payload without duplicating its

@@ -7,6 +7,10 @@ import MotoNavigationCore
 final class SharedNavigationRuntime {
     var onSnapshot: ((MotoNavCoreSnapshot) -> Void)?
     var onFailure: ((String) -> Void)?
+    /// Every accepted fix, before it reaches the navigation core. The trip
+    /// computer lives outside this runtime so a finished ride keeps its totals
+    /// until the rider clears them or the app restarts.
+    var onFix: ((NavigationFix) -> Void)?
 
     private let bridge = MotoNavCoreBridge()
     private let locationSource: any NavigationLocationSource
@@ -91,6 +95,8 @@ final class SharedNavigationRuntime {
         case 1: name = "speed"
         case 2: name = "compass"
         case 3: name = "music"
+        case 4: name = "clock"
+        case 5: name = "trip"
         default: return false
         }
         publish(bridge.selectDisplayPageName(name))
@@ -98,6 +104,7 @@ final class SharedNavigationRuntime {
     }
 
     private func accept(_ fix: NavigationFix) {
+        onFix?(fix)
         let commands = bridge.pushFixLongitude(
             fix.coordinate.longitudeDeg,
             latitude: fix.coordinate.latitudeDeg,

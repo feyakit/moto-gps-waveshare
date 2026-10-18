@@ -60,6 +60,8 @@ moto::ble::DisplayPage DisplayPageFromName(NSString *name) {
   if ([name isEqualToString:@"speed"]) return moto::ble::DisplayPage::Speed;
   if ([name isEqualToString:@"compass"]) return moto::ble::DisplayPage::Compass;
   if ([name isEqualToString:@"music"]) return moto::ble::DisplayPage::Music;
+  if ([name isEqualToString:@"clock"]) return moto::ble::DisplayPage::Clock;
+  if ([name isEqualToString:@"trip"]) return moto::ble::DisplayPage::Trip;
   return moto::ble::DisplayPage::Navigation;
 }
 
@@ -159,6 +161,26 @@ moto::ble::MediaState MediaStateFromInput(MotoBLEMediaStateInput *input) {
   state.source_name = Utf8Prefix(input.sourceName, 31);
   state.track_title = Utf8Prefix(input.trackTitle, 63);
   state.artist_name = Utf8Prefix(input.artistName, 47);
+  return state;
+}
+
+moto::ble::ClockState ClockStateFromInput(MotoBLEClockStateInput *input) {
+  moto::ble::ClockState state;
+  state.local_time_minutes = input.minutes;
+  state.weekday = input.weekday;
+  state.month = input.month;
+  state.day = input.day;
+  return state;
+}
+
+moto::ble::TripState TripStateFromInput(MotoBLETripStateInput *input) {
+  moto::ble::TripState state;
+  state.distance_m = input.distanceM;
+  state.moving_time_s = input.movingTimeS;
+  state.elevation_gain_m = input.elevationGainM;
+  state.max_speed_deci_kph = input.maxSpeedDeciKph;
+  if (input.isRecording) state.flags |= moto::ble::TripRecording;
+  if (input.elevationKnown) state.flags |= moto::ble::TripElevationKnown;
   return state;
 }
 
@@ -282,6 +304,38 @@ moto::ble::ConnectionStatus PhoneConnectionStatus(
     _sourceName = @"APPLE MUSIC";
     _trackTitle = @"";
     _artistName = @"";
+  }
+  return self;
+}
+
+@end
+
+@implementation MotoBLETripStateInput
+
+- (instancetype)init {
+  self = [super init];
+  if (self) {
+    _distanceM = 0;
+    _movingTimeS = 0;
+    _elevationGainM = 0;
+    _maxSpeedDeciKph = 0;
+    _isRecording = NO;
+    _elevationKnown = NO;
+  }
+  return self;
+}
+
+@end
+
+@implementation MotoBLEClockStateInput
+
+- (instancetype)init {
+  self = [super init];
+  if (self) {
+    _minutes = moto::ble::kUnknownLocalTime;
+    _weekday = 0;
+    _month = 0;
+    _day = 0;
   }
   return self;
 }
@@ -501,6 +555,22 @@ moto::ble::ConnectionStatus PhoneConnectionStatus(
   auto *storage = static_cast<CodecStorage *>(_storage);
   return EncodeMessage(storage,
                        moto::ble::Message{MediaStateFromInput(input)},
+                       0, error);
+}
+
+- (NSArray<NSData *> *)encodeClockState:(MotoBLEClockStateInput *)input
+                                  error:(NSError **)error {
+  auto *storage = static_cast<CodecStorage *>(_storage);
+  return EncodeMessage(storage,
+                       moto::ble::Message{ClockStateFromInput(input)},
+                       0, error);
+}
+
+- (NSArray<NSData *> *)encodeTripState:(MotoBLETripStateInput *)input
+                                 error:(NSError **)error {
+  auto *storage = static_cast<CodecStorage *>(_storage);
+  return EncodeMessage(storage,
+                       moto::ble::Message{TripStateFromInput(input)},
                        0, error);
 }
 

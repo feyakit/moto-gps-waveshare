@@ -22,7 +22,11 @@ iOS 17+；源码工程由 XcodeGen 生成。Swift Package 使用 tools-version 6
   正在导航时使用当前活动路线，包括已接受的偏航重算结果。
 - 断网优先使用下载包和缓存，保留内置济南基础地图。离线包只有道路/建筑背景，搜索、
   新路线、偏航重算与实时路况仍需要网络；数据完整程度取决于当地 OSM 覆盖。
-- 当前未接通可信道路限速或红绿灯读秒；完整分段红黄绿路况路线仍在完善。
+- 行程电脑的里程、移动时间、累计爬升和最高速度由 App 累加持有（`TripComputer`），
+  通过 `TripState` 下发给圆屏；圆屏长按行程页发送 `TripReset`，App 清零后回传新数据。
+  里程只在移动时累计，静止漂移不计入。
+- 手机通知通过 ANCS 显示在圆屏上。首次连接 iOS 会弹出配对请求；若系统未弹出，
+  可在“设置 → 蓝牙”中配对一次。通知权限仍由 iOS 控制：关闭某个应用的通知，圆屏同样收不到。
 
 TestFlight 发布准备已开展，但**尚未上传 Apple、提交外测审核或开放邀请，也未在 App Store 发布**。
 Release 归档、单测通过不等于公开发布或完成实车验收。自研 B1 主板暂缓，优先完善微雪版本。
@@ -31,8 +35,9 @@ Release 归档、单测通过不等于公开发布或完成实车验收。自研
 
 1. 先部署自己的 [HTTPS 网关](../../backend/README.md)。
    新地图接口依赖服务端安装依赖和配置地图源；仓库与官网不提供免费公共网关。
-2. 在 `project.yml` 修改 `MOTOGPSGatewayBaseURL` 为自己的 HTTPS 地址，保留结尾 `/`。
-   默认 `https://example.invalid/moto-gps/api/` 不可用，不能用它验收真实搜索/导航。
+2. `project.yml` 的 `MOTOGPSGatewayBaseURL` 已预填本项目当前部署地址
+   `https://1.94.65.14/moto-gps/api/`。若使用自己的网关，替换为自己的 HTTPS 地址并保留结尾 `/`。
+   已安装的 App 也可在“网关设置”中直接保存地址，无需重新安装。
 3. 将三个 `PRODUCT_BUNDLE_IDENTIFIER` 改为自己可用且唯一的标识，并设置自己的
    `DEVELOPMENT_TEAM`（也可以生成后在 Xcode 的 Signing & Capabilities 里选择）。
 4. 安装 XcodeGen，在此目录执行：

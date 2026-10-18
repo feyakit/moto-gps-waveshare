@@ -23,7 +23,7 @@
 	<key>ITSAppUsesNonExemptEncryption</key>
 	<false/>
 	<key>MOTOGPSGatewayBaseURL</key>
-	<string>https://example.invalid/moto-gps/api/</string>
+	<string>https://1.94.65.14/moto-gps/api/</string>
 	<key>NSAppleMusicUsageDescription</key>
 	<string>MOTO GPS 需要读取并控制 Apple Music 播放，以便在车把圆屏上切歌和暂停。</string>
 	<key>NSBluetoothAlwaysUsageDescription</key>

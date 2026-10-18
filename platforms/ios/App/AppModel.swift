@@ -29,6 +29,9 @@ final class AppModel: ObservableObject {
     private var liveRouteProvider: AmapGatewayRouteProvider
     private var placeProvider: AmapGatewayPlaceProvider
     private let mediaController = AppleMusicRemoteController()
+    /// Ride totals live for the whole app session: ending navigation stops the
+    /// fixes but must not wipe the numbers the rider is still looking at.
+    private let tripComputer = TripComputer()
     let surroundingMap: SurroundingMapStore
     @Published private(set) var mapGatewayBaseURL: URL
     @Published private(set) var isUpdatingGateway = false
@@ -64,6 +67,10 @@ final class AppModel: ObservableObject {
                     : .unsupported
             case 16 ... 19:
                 return self.mediaController.handleDeviceCommand(kind: command.kind)
+            case 32:
+                // Long-press on the round display's Trip page.
+                self.publishTrip(self.tripComputer.reset())
+                return .accepted
             default:
                 return .unsupported
             }
@@ -106,6 +113,7 @@ final class AppModel: ObservableObject {
         #endif
         searchLocation.prepare()
         mediaController.start()
+        bluetooth.updateTrip(tripComputer.totals)
         bluetooth.connect()
 
         #if DEBUG
@@ -444,6 +452,15 @@ final class AppModel: ObservableObject {
         runtime.onFailure = { [weak self] message in
             self?.navigationFailure = message
         }
+        runtime.onFix = { [weak self] fix in
+            guard let self else { return }
+            self.publishTrip(self.tripComputer.accept(fix))
+        }
+    }
+
+    /// The board renders the trip, so the phone pushes only the totals.
+    private func publishTrip(_ totals: TripTotals) {
+        bluetooth.updateTrip(totals)
     }
 
     private func beginRoutePreviewRequestIfPossible() {

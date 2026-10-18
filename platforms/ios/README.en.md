@@ -33,6 +33,13 @@ these docs describe the current Chinese interface; they do not imply an English 
   completeness depends on local OSM coverage.
 - Trustworthy road speed limits and traffic-light countdowns are not connected. Complete
   red/yellow/green colouring of individual route segments is still being developed.
+- The trip computer's distance, moving time, accumulated climb and maximum speed are accumulated and
+  owned by the app (`TripComputer`) and sent to the display in `TripState`. A long press on the trip
+  page sends `TripReset`, the app clears and returns fresh figures, and distance only accrues while
+  moving so stationary drift is never counted.
+- Phone notifications reach the round display through ANCS. iOS shows a pairing request on the first
+  connection; if it does not, pair once from "Settings → Bluetooth". Notification permissions still
+  belong to iOS: muting an app there also mutes it on the panel.
 
 TestFlight preparation is underway, but **no build has been uploaded to Apple, submitted for external
 beta review or opened for invitations, and the App is not on the App Store**. A Release archive or

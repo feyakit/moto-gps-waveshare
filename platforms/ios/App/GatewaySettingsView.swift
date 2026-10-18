@@ -22,7 +22,7 @@ struct GatewaySettingsView: View {
                 } header: {
                     Text("网关地址")
                 } footer: {
-                    Text("填写完整的 HTTPS 根地址。例如 https://nav.example.com/moto-gps/api/，不要填高德 Key。")
+                    Text("填写完整的 HTTPS 根地址，例如 https://1.94.65.14/moto-gps/api/。不要填高德 Key。")
                 }
                 Section {
                     Button {
