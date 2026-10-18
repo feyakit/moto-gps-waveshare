@@ -21,6 +21,11 @@ shared NavPresenter → LVGL → CO5300 466×466
 The iPhone is the authoritative end for the route and the position; the round display is not another independent route planner.
 For the BLE service and frame format see `shared/protocol/ble-navigation-v1.md`.
 Touch page changes and music buttons are passed back to the iPhone over BLE, and the iPhone calls Apple Music playback control.
+Phone notifications use Apple's ANCS. The board **stays a BLE peripheral**: it never scans and never
+initiates a connection, and instead acts as a GATT client on the connection the iPhone itself opened.
+`MAX_CONNECTIONS` therefore stays at 1 and neither the navigation link nor the frame format is
+affected. iOS only publishes ANCS to an authorized (bonded) link; when it does not, the firmware only
+logs it and keeps navigating.
 
 The Jinan OSM SQLite database is stored on the iPhone only. The phone queries the roads and buildings around the vehicle and then sends a
 window of limited capacity to the round display; it is background scene data and does not provide offline search, nationwide route calculation or live traffic conditions.

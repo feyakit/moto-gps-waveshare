@@ -1,7 +1,6 @@
-# Waveshare ESP32-S3-Touch-AMOLED-1.75C: 32 MB QIO flash and 8 MB octal PSRAM.
-# These values match the official ESP-IDF example for this exact board.
+# Waveshare ESP32-S3-Touch-AMOLED-2.16: 16 MB QIO flash and 8 MB octal PSRAM.
 CONFIG_ESPTOOLPY_FLASHMODE_QIO=y
-CONFIG_ESPTOOLPY_FLASHSIZE_32MB=y
+CONFIG_ESPTOOLPY_FLASHSIZE_16MB=y
 CONFIG_PARTITION_TABLE_CUSTOM=y
 CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="partitions.csv"
 CONFIG_SPIRAM=y
@@ -12,10 +11,7 @@ CONFIG_SPIRAM_FETCH_INSTRUCTIONS=y
 CONFIG_SPIRAM_RODATA=y
 
 # The board port supplies its own PSRAM draw buffers and explicitly opts into
-# direct PSRAM DMA. Keep a single outstanding QSPI transaction so old display
-# frames cannot accumulate; the original BSP's default bounce buffers are not
-# used by this board port.
-CONFIG_BSP_LCD_TRANS_QUEUE_DEPTH=1
+# direct PSRAM DMA. Keep one outstanding QSPI transaction in the board port.
 CONFIG_ESP32S3_INSTRUCTION_CACHE_32KB=y
 CONFIG_ESP32S3_DATA_CACHE_64KB=y
 CONFIG_ESP32S3_DATA_CACHE_LINE_64B=y
@@ -31,19 +27,23 @@ CONFIG_LOG_DEFAULT_LEVEL_INFO=y
 # after the vendor BSP has initialized the display. The ESP-IDF default 3584
 # byte app_main stack overflows during that one-time startup on real hardware.
 CONFIG_ESP_MAIN_TASK_STACK_SIZE=16384
+CONFIG_ESP_LCD_TOUCH_MAX_POINTS=2
 
 # NimBLE is the phone transport. Bluetooth Classic is intentionally disabled
 # on ESP32-S3 and not required by the navigation link.
 CONFIG_BT_ENABLED=y
 CONFIG_BT_NIMBLE_ENABLED=y
 CONFIG_BT_NIMBLE_ROLE_PERIPHERAL=y
-CONFIG_BT_NIMBLE_ROLE_CENTRAL=n
+# The central role is not used for connections: the board never scans and never
+# initiates one. ESP-IDF only compiles GATT client support, which the Apple
+# Notification Center Service needs, when the central role is enabled.
+CONFIG_BT_NIMBLE_ROLE_CENTRAL=y
 CONFIG_BT_NIMBLE_ROLE_BROADCASTER=y
 CONFIG_BT_NIMBLE_ROLE_OBSERVER=n
 CONFIG_BT_NIMBLE_MAX_CONNECTIONS=1
 CONFIG_BT_NIMBLE_GAP_SERVICE=y
 CONFIG_BT_NIMBLE_GATT_SERVER=y
-CONFIG_BT_NIMBLE_GATT_CLIENT=n
+CONFIG_BT_NIMBLE_GATT_CLIENT=y
 CONFIG_BT_NIMBLE_SECURITY_ENABLE=y
 CONFIG_BT_NIMBLE_NVS_PERSIST=y
 CONFIG_BT_NIMBLE_MAX_BONDS=3

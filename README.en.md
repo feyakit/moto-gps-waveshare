@@ -14,7 +14,7 @@
 
 ![MOTO GPS round-display motorcycle navigation terminal](assets/brand/moto-gps-cover.png)
 
-**Want to build the Waveshare edition yourself? Start with the [buying, firmware flashing and iPhone installation guide](docs/WAVESHARE_DIY_GUIDE.en.md).**
+**Using the 2.16-inch board? Start with the [ESP32-S3-Touch-AMOLED-2.16 + iPhone setup guide](docs/WAVESHARE_2_16_SETUP.md).**
 
 [Features and user manual](docs/USER_MANUAL.en.md) · [Live navigation gateway configuration](docs/GATEWAY_SETUP.en.md)
 
@@ -39,7 +39,7 @@ A round display on the handlebar, an iPhone in your bag. The phone handles posit
 route calculation, while the round display shows terse navigation, speed and relative heading over
 Bluetooth and controls Apple Music.
 
-The project is built on the **Waveshare ESP32-S3-Touch-AMOLED-1.75C** and includes round-display
+The current workspace targets the **Waveshare ESP32-S3-Touch-AMOLED-2.16** and includes round-display
 firmware, an iOS app, a route gateway and a web debugging tool.
 
 The repository also collects the in-house circuit board, the V3 enclosure, manufacturing review
@@ -94,7 +94,10 @@ prototyping has resumed or production acceptance has been completed.
 | iPhone | Native navigation bars and grouped lists, light/dark appearance and large text, location-biased search, history, route preview and selection |
 | Navigation logic | Shared C++ core: route progress, off-route detection, online rerouting and periodic route / traffic refresh |
 | Grey roads / buildings | Surrounding OSM / Protomaps maps load online by default; city, district and route-corridor downloads, with the bundled Jinan map retained as a fallback |
-| Speedometer / heading | Phone positioning provides speed and direction of travel; the on-board QMI8658 assists with relative turning |
+| Speedometer / heading / clock | Phone positioning provides speed and direction of travel; the on-board QMI8658 assists with relative turning; the clock page mirrors the phone's local time |
+| Trip computer | Distance, moving time, average and maximum speed plus accumulated climb; the phone owns the totals and the panel only displays them, long press clears |
+| Parked screen-off | 45 s (180 s with a route) after the engine stops the panel blanks and rendering pauses; engine vibration, phone speed, touch or the key light it again |
+| Phone notifications | ANCS notifications on the round display: caller, SMS and chat app titles and bodies; silent notifications never light the panel |
 | Music | Apple Music previous track, play/pause, next track |
 | Animation / touch | Black-and-white logo fade in and out, connection-state transitions, swipe page changes, auto-hiding page dots, long-press PWR to power off |
 | Demo | Near Building D of the Jinan Big Data Industry Base → near Inspur headquarters; online requests and the OSM offline fallback are explicitly distinguished |
@@ -104,7 +107,7 @@ prototyping has resumed or production acceptance has been completed.
 ### Round-display navigation: see the next junction clearly
 
 The navigation page is black-based, with the white route and turn prompts as the focus of the
-screen. In the 466×466 round display area, every element has a definite meaning:
+screen. In the 480×480 round display area, every element has a definite meaning:
 
 | Element on screen | What it expresses |
 | --- | --- |
@@ -223,7 +226,7 @@ attribution and licence links. See the [recent update](docs/UPDATES_2026-09-16.e
 flow and the [offline map notes](shared/offline_map/README.en.md) for the original database format
 and rebuild tools.
 
-### Speedometer and heading pages
+### Speedometer, heading and clock pages
 
 The speedometer page shows the current speed as a large number in `km/h`, with an outer scale and an
 arc that change with speed.
@@ -238,6 +241,70 @@ movement; the relative rotation on the round display comes from the device's own
 speed or at rest, unreliable heading changes are frozen and residual speed is suppressed; the
 positioning heading gradually corrects it once you are moving again. An absolute north reference at rest is part of a
 later magnetometer extension.
+
+The clock page shows the phone's local wall-clock as a large `HH:MM` inside a 60-tick watch dial
+sized to match the compass ring, with the weekday and date underneath. The phone owns its own time zone and sends minutes since
+its local midnight in the `ClockState` message, so the round display never has to interpret UTC.
+There is no on-board RTC: while the link is live the time follows the phone, and if the phone
+disconnects the page returns to its `--:--` placeholder rather than ticking a stale value.
+
+### Trip computer: how far this ride went
+
+The trip page puts four ride figures on one round screen: `TRIP` at the top, the total distance in
+`KM` as the hero, then `MOVING`, `AVG KM/H` and `MAX KM/H`, with accumulated `CLIMB +N M` at the
+bottom.
+
+The phone accumulates and owns the data. The device stores no odometer and infers no speed:
+
+- the phone sends distance, moving time, accumulated climb and maximum speed in a `TripState`
+  message together with "recording" and "climb known" flags;
+- average speed is derived on the panel from `distance / moving time`, so the two ends cannot
+  disagree through different rounding rules;
+- a firmware restart, a phone swap or a reconnect can never lose or double-count distance;
+- an empty trip renders `NO TRIP`, and an unknown climb renders `CLIMB --` instead of pretending
+  zero metres of climb;
+- **long-pressing anywhere** on the trip page clears it: the panel sends a `TripReset` command and
+  the phone answers with a fresh `TripState`. No hint is drawn on the page, because a permanent
+  hint would occupy scarce round-screen space.
+
+### Parked screen-off and motion wake
+
+A parked bike needs no instrument, yet the panel kept refreshing the map at 40 Hz: that idle work
+was the largest avoidable drain. The policy uses chassis vibration to tell the two states apart:
+
+- the QMI8658 accelerometer samples continuously; a running engine keeps the chassis buzzing, so
+  "stopped but still running" never blanks the screen and only a genuinely quiet bike parks;
+- after the quiet hold (45 s by default, 180 s while navigating) the panel drops to zero brightness
+  and LVGL rendering stops;
+- the phone-reported speed also proves motion, so steady low-speed riding on a smooth surface is
+  never mistaken for parking;
+- render requests made while the panel is dark are retained and coalesced, and the wake frame
+  repaints everything so no half-updated screen survives;
+- pulling away (vibration), touching the screen or pressing the key wakes the panel immediately at
+  the previous brightness.
+
+### Phone notifications (ANCS)
+
+The round display shows phone notifications through Apple's Notification Center Service (ANCS):
+incoming calls, SMS, chat apps and calendar alerts appear as a full-screen card with the category
+(such as `INCOMING CALL`), the app identifier, the title and the body, plus the number of
+notifications that arrived in the current burst.
+
+- the card covers the current page for 8 s (12 s for important notifications, 20 s for an incoming
+  call) and closes immediately on touch;
+- silent notifications stay in the background and never light a blanked panel; everything else
+  wakes it;
+- the board remains a BLE peripheral: ANCS rides the connection the phone itself opened, and the
+  board acts as a GATT client **on that same link**, so the navigation link, protocol and page
+  logic are untouched;
+- the phone shows a pairing request on first connection; the notification body is subject to iOS
+  permissions, so muting an app in Settings also mutes it on the panel;
+- iOS only publishes ANCS to an authorized (bonded) link. Some iOS versions publish it only after
+  pairing from iPhone "Settings → Bluetooth"; the firmware then logs
+  `ANCS is not published on this link` and navigation is unaffected.
+- notification text uses a GB2312 level-1 Hanzi font shipped in the firmware, covering about
+  99.7% of everyday Chinese; rare characters fall back to placeholder boxes. The asset is produced
+  by `scripts/generate_fonts.sh`.
 
 ### Apple Music control
 
@@ -269,8 +336,9 @@ handshake completes, the green success state holds for about 0.9 seconds before 
 page, which prompts you to choose a destination on the phone. The page keeps switching with state
 as planning starts and the route arrives.
 
-- Swipe left and right to switch between the navigation, speedometer, heading and music pages; the
-  music page is available according to the phone's capabilities.
+- Swipe left and right to switch between the navigation, speedometer, trip, heading, clock and
+  music pages; long press the trip page to clear it and the music page is available according to
+  the phone's capabilities.
 - Dots at the bottom identify the current page and hide automatically after five seconds.
 - The dots reappear after a touch or a page change.
 - Holding the side PWR button for about three seconds shows the power-off screen and requests
@@ -308,7 +376,7 @@ After the first install and configuration, a navigation session goes in this ord
    and traffic conditions.
 5. Select a route and tap "Start navigation"; the phone starts updating position and the round
    display shows the current section and the next action.
-6. When stopped you can swipe through the speedometer, heading and music pages and change tracks as
+6. When stopped you can swipe through the speedometer, heading and clock pages and change tracks as
    needed.
 7. On arrival check the arrival state and end navigation on the phone; when putting the bike away,
    hold PWR on the round display to power it off.
@@ -325,18 +393,18 @@ against a mature navigation app.
 
 | Item | Currently supported |
 | --- | --- |
-| Development board | Waveshare ESP32-S3-Touch-AMOLED-1.75C |
+| Development board | Waveshare ESP32-S3-Touch-AMOLED-2.16 |
 | MCU | ESP32-S3 |
-| Storage | 32 MB Flash, 8 MB PSRAM |
-| Display | 1.75-inch round AMOLED, 466×466 |
+| Storage | 16 MB Flash, 8 MB PSRAM |
+| Display | 2.16-inch round AMOLED, 480×480 |
 | Display driver | CO5300, QSPI, RGB565 |
-| Touch | CST9217 capacitive touch |
+| Touch | CST9220 capacitive touch |
 | Motion sensor | QMI8658 six-axis IMU |
 | Power management | AXP2101, USB-C / matching lithium battery |
 | Phone connection | BLE, custom navigation GATT service |
 
 Prepare a USB-C cable that supports data transfer. When using a battery, choose one according to
-Waveshare's specification, connector and polarity requirements for the **1.75C**. Check the complete
+Waveshare's specification, connector and polarity requirements for the **2.16**. Check the complete
 board model before flashing; board-level connections and firmware steps are in the
 [ESP32 notes](platforms/esp32/README.en.md).
 

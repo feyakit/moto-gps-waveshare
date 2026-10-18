@@ -13,8 +13,9 @@ cmake --build build/native --parallel 4
 ctest --test-dir build/native --output-on-failure
 ```
 
-覆盖坐标、路线状态机、协议、Presenter、连接 epoch、航向融合和 PhoneNavBridge。
-测试中使用 Host Stub，不代表真实 LVGL 绘制/蓝牙时序已验证。
+覆盖坐标、路线状态机、协议（含行程消息 `0x16` 与 ANCS 载荷编解码）、Presenter、连接 epoch、
+航向融合、停车判定、行程页/通知卡片的 RGB565 渲染和 PhoneNavBridge。
+测试中使用 Host Stub，不代表真实 LVGL 绘制/蓝牙时序已验证，也不代表 iPhone 已经发布 ANCS。
 
 ## Node 网关
 

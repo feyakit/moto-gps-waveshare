@@ -19,6 +19,10 @@ ESP32 PhoneNavBridge + QMI8658 相对角速度
 iPhone 是路线与位置的权威端，圆屏不是另一个独立路线规划器。
 BLE 服务与帧格式见 `shared/protocol/ble-navigation-v1.md`。
 触摸切页和音乐按键沿 BLE 反向传给 iPhone，后者调用 Apple Music 播放控制。
+手机通知走 Apple 的 ANCS：板子**保持 BLE 外设角色**，不扫描、不发起连接，而是在
+iPhone 自己建立的那条连接上作为 GATT 客户端读取通知，因此 `MAX_CONNECTIONS` 仍为 1，
+导航链路和帧格式都不受影响。ANCS 只在已授权（配对）的连接上发布通知；未发布时固件
+只记录日志并继续导航。
 
 济南 OSM SQLite 库只存放在 iPhone。手机查询车辆周围的道路、建筑，再将有限容量的
 窗口传给圆屏；它是背景场景数据，不提供离线搜索、全国算路或实时路况。

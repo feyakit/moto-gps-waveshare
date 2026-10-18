@@ -303,9 +303,13 @@ cannot verify the round display's BLE.
    system Bluetooth list first.
 4. Tap "Demo navigation" in the App. The round display should show the moving route, the turn icons
    and the distance, and the phone keeps indicating that it is a demo.
-5. Swipe left and right on the round display and check the speedometer and heading pages; the music
-   page is available according to the phone's capabilities.
-6. Tap "End navigation" in the App and confirm that the demo has exited.
+5. Swipe left and right on the round display and check the speedometer, trip, heading and clock pages;
+   the trip page is fed by the App and a long press clears it, and the music page is available
+   according to the phone's capabilities.
+6. Have the phone receive a notification (or dial in a call) and confirm that the round display shows
+   the full-screen notification card and hides it again after 8 seconds (20 seconds for an incoming
+   call). On the first use you may have to pair the device once from iPhone "Settings → Bluetooth".
+7. Tap "End navigation" in the App and confirm that the demo has exited.
 
 The current source no longer binds a long press on the round display to the demo toggle. Start from
 the App's "Demo navigation" instead, so that you do not follow older records and long-press with no

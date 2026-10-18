@@ -45,6 +45,10 @@ The level of each deliverable in this round is as follows.
 | SIM-03 | Web event log, state readouts and performance observation | C | Used only for development verification |
 | SPD-01 | Separate speedometer page: current speed, `km/h`, a clean perimeter scale | A | The speed value comes from the platform data source; the screen is same-source |
 | CMP-01 | Separate compass page: degrees, compass letter, rotating scale and a fixed reference line | A | The heading value comes from the platform data source; the screen is same-source |
+| CLK-01 | Separate clock page: phone local `HH:MM`, weekday and date on a 60-tick dial sized to match the compass ring | A | The phone owns its time zone and sends minutes since its local midnight in the `ClockState` message; no on-board RTC |
+| TRIP-01 | Separate trip page: distance, moving time, average and maximum speed, accumulated climb, long press to clear | A | The phone accumulates and sends totals in `TripState`; average speed is derived on the device and a firmware restart loses nothing |
+| PWR-01 | Parked screen-off and motion wake (vibration detection, zero brightness, rendering paused) | A | The policy and the render-skip logic are same-source; panel brightness is a platform capability |
+| NTF-01 | Phone notifications: ANCS card with category, app, title, body and count | B | iOS publishes ANCS, so delivery depends on pairing authorization; the page and decoders are verified in the shared layer and the source can only be verified on a real phone |
 | MUS-01 | Music page layout, and touch events for play / pause, previous track, next track and like | A | The page and event contracts are same-source, but that does not mean the phone app can already be controlled |
 | MUS-02 | Simulation of the track, playback state and button feedback in the web page | C | Proves only the interaction and the visuals, not the ability to control the phone |
 | MUS-03 | On real hardware, control the currently active player through BLE HID + Apple Media Service | B | Verified in a later hardware phase; no separate business logic is written for Apple Music or NetEase Cloud Music |
@@ -69,7 +73,7 @@ The following cannot be claimed to carry over as-is "once the web page is finish
 The default page order is:
 
 ```text
-navigation ←→ speedometer ←→ compass ←→ music (when the feature toggle is enabled)
+navigation ←→ speedometer ←→ trip ←→ compass ←→ clock ←→ music (when the feature toggle is enabled)
 ```
 
 - Swipe left and right to switch pages; page switching is horizontal only, and vertical jitter does not trigger it.
@@ -114,7 +118,52 @@ The speedometer stays a "plain speedometer":
 - When the heading is invalid or the accuracy is insufficient it degrades clearly and does not show falsely precise degrees;
 - At low speed the heading source may need a magnetometer or IMU / GNSS fusion; the sensor selection is deferred, and this round uses a simulated heading to verify the screen and the algorithm interface.
 
-### 3.5 Optional music page
+### 3.5 Clock page
+
+- A large `HH:MM` in the centre of a 60-tick watch dial sized to match the compass ring, with the weekday and date underneath;
+- The phone owns its time zone and sends minutes since its local midnight in the `ClockState` message, so the device never interprets UTC;
+- There is no on-board RTC: while the link is live the page follows the phone, and it returns to a `--:--` placeholder when the phone disconnects instead of ticking a stale value;
+- The dial shares the speed arc and compass ring's tick family so the instrument pages stay visually consistent.
+
+### 3.6 Trip page
+
+- `TRIP` at the top, the large total distance and `KM` in the middle, then `MOVING`, `AVG KM/H` and
+  `MAX KM/H`, with accumulated climb at the bottom;
+- the phone accumulates and owns the trip: a firmware restart, a phone swap or a reconnect can never
+  lose or double-count distance;
+- the phone sends totals only, and average speed is derived on the device from
+  `distance / moving time`, so the ends cannot disagree through different rounding rules;
+- an empty trip renders `NO TRIP` and an unknown climb renders `CLIMB --` instead of pretending zero
+  metres of climb;
+- long-pressing anywhere sends `TripReset`; the phone clears and answers with a fresh `TripState`.
+  No reset hint is drawn on the page.
+
+### 3.7 Parked screen-off and motion wake
+
+- the QMI8658 accelerometer samples continuously: a running engine keeps the chassis buzzing, so
+  "stopped but still running" never blanks the screen and only a genuinely quiet bike parks;
+- after the quiet hold (45 s by default, 180 s while navigating) brightness drops to zero and LVGL
+  rendering stops, saving power and skipping pointless projection work;
+- the phone-reported speed also proves motion, so steady low-speed riding on a smooth surface is
+  never mistaken for parking;
+- render requests made while the panel is dark are retained and coalesced, and the wake frame
+  repaints everything so no half-updated screen survives;
+- pulling away, touching the screen or pressing the key wakes the panel at the previous brightness.
+
+### 3.8 Phone notifications
+
+- the panel shows phone notifications through ANCS as a full-screen card with category, app
+  identifier, title, body and the number of notifications in the burst;
+- the board keeps its BLE peripheral role: ANCS rides the connection the phone opened, and the board
+  is a GATT client on that same link, so the navigation protocol and page logic stay unchanged;
+- the card stays for 8 s (12 s for important notifications, 20 s for an incoming call) and closes on
+  touch; silent notifications never light a blanked panel;
+- iOS only publishes ANCS to an authorized (bonded) link, so delivery depends on iPhone pairing and
+  notification permissions, which is B-level verification;
+- notification text uses a GB2312 level-1 Hanzi font shipped in the firmware; rare characters fall
+  back to placeholder boxes.
+
+### 3.9 Optional music page
 
 The first version only verifies a safe, simple control layout:
 

@@ -22,7 +22,7 @@ iPhone → 你自己的 HTTPS 网关 → 高德 Web 服务（搜索、路线、�
 按当前控制台流程创建应用和 **Web 服务** 类型 Key，确认 POI 搜索、驾车路线与行政区域查询权限/配额。
 这里不是 iOS SDK Key，也不是网页 JavaScript Key。
 
-需要一台可持续运行 Node.js 的服务器和一个自己的域名。以下示例按 Linux + Node.js 24+ + Caddy 2 编写；
+需要一台可持续运行 Node.js 的服务器，以及域名或可公开访问的固定公网 IP。以下示例按 Linux + Node.js 24+ + Caddy 2 编写；
 本地 Mac 可先测后端，但电脑休眠、关机或手机离开局域网后不能把它当持续可用的公网服务。
 GitHub Pages 只托管静态内容，不能运行本 Node 网关。
 
@@ -92,7 +92,7 @@ curl --fail-with-body http://127.0.0.1:8787/healthz
 
 ## 3. 给手机提供 HTTPS 地址
 
-将自己的域名 A/AAAA 记录指向服务器，在使用的防火墙/安全组允许该部署所需的 80/443，
+将自己的域名 A/AAAA 记录指向服务器，或直接使用固定公网 IP；在使用的防火墙/安全组允许该部署所需的 80/443，
 确保端口未被其他服务占用。只为反向代理暴露 HTTPS，Node 保持监听本机。
 按安装方式打开 Caddyfile（Linux 服务通常在 `/etc/caddy/Caddyfile`），将以下站点块合并进去：
 
@@ -110,6 +110,11 @@ nav.example.com {
 Caddy 在域名、端口和存储条件满足时申请并维护 HTTPS 证书。依据：
 [路径处理](https://caddyserver.com/docs/caddyfile/directives/handle_path)、
 [自动 HTTPS](https://caddyserver.com/docs/automatic-https)。
+
+没有域名时，可用固定公网 IP 作为站点地址。当前部署直接使用 `1.94.65.14`，App 根地址为
+`https://1.94.65.14/moto-gps/api/`，不需要 DNS A 记录。Caddy 配置为该 IP 自动申请并续期
+Let's Encrypt IP 证书；这类证书有效期约 160 小时，必须保持 Caddy 自动续期正常。
+参见 [Let's Encrypt IP 地址证书说明](https://letsencrypt.org/2026/01/15/6day-and-ip-general-availability)。
 
 此示例假定 Caddy 直接面向手机，覆盖 `X-Real-IP` 后供本机 Node 做来源限流，
 不能透传任意客户端自报地址。依据：[请求头设置](https://caddyserver.com/docs/caddyfile/directives/reverse_proxy#headers)、

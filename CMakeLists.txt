@@ -17,6 +17,7 @@ set(CONFIG_LV_USE_THORVG_INTERNAL OFF CACHE BOOL "No vector animation engine in 
 add_subdirectory(shared/coordinates EXCLUDE_FROM_ALL)
 add_subdirectory(shared/nav_core EXCLUDE_FROM_ALL)
 add_subdirectory(shared/nav_app EXCLUDE_FROM_ALL)
+add_subdirectory(shared/audio EXCLUDE_FROM_ALL)
 add_subdirectory(shared/nav_ui)
 add_subdirectory(shared/nav_presenter)
 

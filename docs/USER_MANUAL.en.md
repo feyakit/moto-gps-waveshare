@@ -119,10 +119,10 @@ network fails, the App uses downloaded regions, recent cache and the bundled Jin
 areas may be missing. Completeness depends on local OSM data, and the display selects features within
 its capacity. See section 10 for downloads.
 
-## 6. Speedometer, heading and touch
+## 6. Speedometer, trip, heading, clock and touch
 
 Swipe left and right on the round display to switch pages. Swiping left cycles navigation →
-speedometer → heading → music, and swiping right goes the other way; when the music capability is not
+speedometer → trip → heading → clock → music, and swiping right goes the other way; when the music capability is not
 enabled the music page is skipped. The page indicator dots appear after a touch / page change and
 retract after about 5 seconds of no operation. Use a fairly definite horizontal swipe; operating in
 the middle of the round display is easier to recognise.
@@ -137,7 +137,57 @@ QMI8658 has no magnetometer, so when you are stopped and turn the device in plac
 treated as a calibrated true-north compass.
 
 A long press on the screen no longer starts the on-device demo. The long-press demo behaviour in
-older version records has been removed.
+older version records has been removed; the trip page is the only page that uses a long press (see
+below).
+
+### Trip page
+
+The trip page shows `TRIP`, the total distance, `MOVING` (moving time), `AVG KM/H`, `MAX KM/H` and
+the accumulated climb `CLIMB +N M`, from top to bottom.
+
+The phone accumulates the distance and the round display only shows it, so restarting the firmware,
+swapping phones or reconnecting can never lose or double-count distance. Average speed is computed on
+the panel from `distance ÷ moving time`. An empty trip shows `NO TRIP`, and an unavailable climb
+figure shows `CLIMB --`.
+
+**Clearing**: long-press anywhere on the trip page and the panel asks the phone to clear the trip;
+the phone resets and sends fresh figures. No hint is drawn on the page, because a long press is a
+rare instrument gesture.
+
+### Parked screen-off and motion wake
+
+After the engine stops, the instrument blanks the panel and stops refreshing the picture about 45
+seconds later (180 seconds while navigating) to save power. The decision is based on chassis
+vibration: the slight buzz of a running engine counts as "still riding", so waiting with the engine
+on never blanks the screen.
+
+Any of the following wakes the panel immediately:
+
+- pulling away (the chassis starts to vibrate);
+- touching the screen;
+- a short press on the side PWR key.
+
+The speed reported by the phone also counts as proof of motion, so steady low-speed riding on a
+smooth surface is never mistaken for a parked bike.
+
+### Phone notifications
+
+Incoming calls, SMS, chat apps and calendar alerts from the phone appear full-screen on the round
+display with the category (for example `INCOMING CALL`), the app identifier, the title and the body,
+plus a count of the notifications that arrived in the current burst in the top corner.
+
+- the card stays for about 8 seconds (12 seconds for important notifications, 20 seconds for an
+  incoming call) and closes immediately when you touch the screen;
+- silent notifications never light a blanked screen; other notifications wake it;
+- the iPhone shows a pairing request on first connection: choose "Pair". If no request appears, you
+  can also pair the device once from iPhone "Settings → Bluetooth";
+- notification permissions are controlled by iOS: muting an app in Settings also mutes it on the
+  panel;
+- when the phone does not publish the notification service (for example before authorization) the
+  panel only shows navigation and nothing else breaks; the log records
+  `ANCS is not published on this link`;
+- notification text uses a Hanzi font shipped in the firmware and covers everyday Chinese; rare
+  characters fall back to placeholder boxes.
 
 ## 7. Apple Music control
 

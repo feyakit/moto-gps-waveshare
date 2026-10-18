@@ -27,7 +27,7 @@ create an application and a **Web Service** type key following the current conso
 the POI search, driving route and administrative-boundary query permissions / quota. This is not the iOS SDK key, nor the web page
 JavaScript key.
 
-You need a server that can run Node.js continuously and a domain of your own. The examples below are
+You need a server that can run Node.js continuously and either your own domain or a publicly reachable fixed IP address. The examples below are
 written for Linux + Node.js 24+ + Caddy 2; a local Mac can test the backend first, but once the
 computer sleeps, shuts down or the phone leaves the local network you cannot treat it as a
 continuously available public service. GitHub Pages only hosts static content and cannot run this
@@ -107,8 +107,8 @@ mean the actual key and upstream network have been verified. Also check
 
 ## 3. Provide an HTTPS address to the phone
 
-Point your domain's A/AAAA records at the server, allow the 80/443 this deployment needs in the
-firewall / security group you use, and make sure the ports are not occupied by another service.
+Point your domain's A/AAAA records at the server, or use its fixed public IP directly. Allow the
+80/443 this deployment needs in the firewall / security group you use, and make sure the ports are not occupied by another service.
 Expose HTTPS only for the reverse proxy, and keep Node listening on the local machine. Open the
 Caddyfile the way your installation expects (on a Linux service it is usually
 `/etc/caddy/Caddyfile`) and merge the following site block into it:
@@ -128,6 +128,12 @@ nav.example.com {
 port and the storage conditions are met. Sources:
 [path handling](https://caddyserver.com/docs/caddyfile/directives/handle_path),
 [automatic HTTPS](https://caddyserver.com/docs/automatic-https).
+
+Without a domain, use a fixed public IP as the site address. This deployment uses `1.94.65.14`; the
+App base URL is `https://1.94.65.14/moto-gps/api/`, so no DNS A record is needed. Caddy is configured
+to obtain and renew a Let's Encrypt IP address certificate automatically. These certificates last
+about 160 hours, so automatic renewal must remain healthy. See [Let's Encrypt's IP address certificate
+announcement](https://letsencrypt.org/2026/01/15/6day-and-ip-general-availability).
 
 This example assumes Caddy receives requests directly from the phone. It overwrites `X-Real-IP` for
 the local Node rate limiter rather than passing through an arbitrary client-supplied address. See

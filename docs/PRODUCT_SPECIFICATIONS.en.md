@@ -34,7 +34,10 @@ Sources: [Waveshare firmware notes](../platforms/esp32/README.en.md), [A1 status
 | Navigation | Shared C++ route progress, arrival detection, consecutive off-route confirmation, reroute, stale-response discard and traffic refresh |
 | Round-display map | White selected route, heading up; grey roads and buildings are provided by the local map window |
 | Offline base map | Jinan SQLite vector package: 47,468 roads, 26,702 buildings; the phone clips the nearby window and sends it |
-| Page interaction | Swipe left and right to switch between the navigation, speedometer, compass and optional music pages; the page dots hide after 5 seconds |
+| Page interaction | Swipe left and right to switch between the navigation, speedometer, trip, compass, clock and optional music pages; the page dots hide after 5 seconds |
+| Trip computer | Distance, moving time, average and maximum speed, accumulated climb; the phone owns the accumulated distance and the panel only displays it, long press clears |
+| Parked power policy | After 45 seconds of engine-off quiet (180 seconds while navigating) the panel blanks and rendering pauses; chassis vibration, phone speed, touch or the key wake it |
+| Phone notifications | ANCS notifications shown full screen: category, app, title, body and the burst count; silent notifications never light a blanked panel |
 | Music | Apple Music previous track, play/pause, next track and track state |
 | Communication | BLE v1; CRC, fragmentation and reassembly, heartbeat, session validation and a two-phase handshake |
 | Power on / off | Startup with the logo on a black background; holding Waveshare PWR for 3 seconds for software power-off, 4 seconds for the PMIC hardware fallback configuration |
